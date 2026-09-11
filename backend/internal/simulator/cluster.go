@@ -11,8 +11,9 @@ type NodeStatus string
 type PodStatus string
 
 const (
-	RoleWorker NodeRole = "worker"
-	RoleMaster NodeRole = "master"
+	RoleWorker       NodeRole = "worker"
+	RoleMaster       NodeRole = "master"
+	RoleControlPlane NodeRole = "control-plane"
 
 	StatusReady    NodeStatus = "Ready"
 	StatusNotReady NodeStatus = "NotReady"
@@ -24,23 +25,26 @@ const (
 )
 
 type K8sNode struct {
-	Name            string     `json:"name"`
-	Role            NodeRole   `json:"role"`
-	Status          NodeStatus `json:"status"`
-	Health          int        `json:"health"`
-	CPUCapacity     float64    `json:"cpuCapacity"`
-	MemoryCapacity  int        `json:"memoryCapacity"` // in Mi
-	CPUAllocated    float64    `json:"cpuAllocated"`
-	MemoryAllocated int        `json:"memoryAllocated"`
-	Pods            []string   `json:"pods"`
-	LaneIndex       int        `json:"laneIndex"`
-	AmmoCount       int        `json:"ammoCount"`
+	Name              string     `json:"name"`
+	Role              NodeRole   `json:"role"`
+	Status            NodeStatus `json:"status"`
+	Health            int        `json:"health"` // fictional game/SLA health
+	CPUCapacity       float64    `json:"cpuCapacity"`
+	MemoryCapacity    int        `json:"memoryCapacity"`
+	CPUAllocatable    float64    `json:"cpuAllocatable"`
+	MemoryAllocatable int        `json:"memoryAllocatable"`
+	CPUAllocated      float64    `json:"cpuAllocated"` // sum of Pod requests
+	MemoryAllocated   int        `json:"memoryAllocated"`
+	Pods              []string   `json:"pods"`
+	LaneIndex         int        `json:"laneIndex"` // game layout only
+	AmmoCount         int        `json:"ammoCount"` // visual defense capacity only
 }
 
 type K8sPod struct {
 	Name              string    `json:"name"`
 	Image             string    `json:"image"`
 	Status            PodStatus `json:"status"`
+	Ready             bool      `json:"ready"`
 	NodeName          string    `json:"nodeName"`
 	CPURequest        float64   `json:"cpuRequest"`
 	MemoryRequest     int       `json:"memoryRequest"`
@@ -56,7 +60,7 @@ type ClusterEvent struct {
 	ID          string `json:"id"`
 	Timestamp   string `json:"timestamp"`
 	TimeSeconds int    `json:"timeSeconds"`
-	Type        string `json:"type"` // Normal, Warning
+	Type        string `json:"type"`
 	Reason      string `json:"reason"`
 	Object      string `json:"object"`
 	Message     string `json:"message"`
@@ -88,7 +92,7 @@ func NewClusterEngine(namespace string) *ClusterEngine {
 	engine := &ClusterEngine{
 		startTime: time.Now(),
 		state: ClusterState{
-			ClusterName:  "ocp4-training.cluster.local",
+			ClusterName:  "k8s.training.cluster.local",
 			Namespace:    namespace,
 			Nodes:        getDefaultNodes(),
 			Pods:         make([]K8sPod, 0),
@@ -105,70 +109,23 @@ func NewClusterEngine(namespace string) *ClusterEngine {
 
 func getDefaultNodes() []K8sNode {
 	return []K8sNode{
-		{
-			Name:            "worker-1",
-			Role:            RoleWorker,
-			Status:          StatusReady,
-			Health:          100,
-			CPUCapacity:     2.0,
-			MemoryCapacity:  4096,
-			CPUAllocated:    0,
-			MemoryAllocated: 0,
-			Pods:            make([]string, 0),
-			LaneIndex:       0,
-			AmmoCount:       0,
-		},
-		{
-			Name:            "worker-2",
-			Role:            RoleWorker,
-			Status:          StatusReady,
-			Health:          100,
-			CPUCapacity:     4.0,
-			MemoryCapacity:  8192,
-			CPUAllocated:    0,
-			MemoryAllocated: 0,
-			Pods:            make([]string, 0),
-			LaneIndex:       1,
-			AmmoCount:       0,
-		},
-		{
-			Name:            "worker-3",
-			Role:            RoleWorker,
-			Status:          StatusReady,
-			Health:          100,
-			CPUCapacity:     2.0,
-			MemoryCapacity:  2048,
-			CPUAllocated:    0,
-			MemoryAllocated: 0,
-			Pods:            make([]string, 0),
-			LaneIndex:       2,
-			AmmoCount:       0,
-		},
+		{Name: "worker-1", Role: RoleWorker, Status: StatusReady, Health: 100, CPUCapacity: 2, MemoryCapacity: 4096, CPUAllocatable: 1.8, MemoryAllocatable: 3584, Pods: []string{}, LaneIndex: 0},
+		{Name: "worker-2", Role: RoleWorker, Status: StatusReady, Health: 100, CPUCapacity: 4, MemoryCapacity: 8192, CPUAllocatable: 3.6, MemoryAllocatable: 7168, Pods: []string{}, LaneIndex: 1},
+		{Name: "worker-3", Role: RoleWorker, Status: StatusReady, Health: 100, CPUCapacity: 2, MemoryCapacity: 2048, CPUAllocatable: 1.8, MemoryAllocatable: 1792, Pods: []string{}, LaneIndex: 2},
 	}
 }
 
 func (c *ClusterEngine) addInitialEvents() {
-	c.AddEvent(ClusterEvent{
-		Type:    "Normal",
-		Reason:  "NodeReady",
-		Object:  "node/worker-1",
-		Message: "Node worker-1 status is now: NodeReady (2 CPU, 4Gi RAM)",
-		Step:    "KUBELET_OBSERVED",
-	})
-	c.AddEvent(ClusterEvent{
-		Type:    "Normal",
-		Reason:  "NodeReady",
-		Object:  "node/worker-2",
-		Message: "Node worker-2 status is now: NodeReady (4 CPU, 8Gi RAM)",
-		Step:    "KUBELET_OBSERVED",
-	})
-	c.AddEvent(ClusterEvent{
-		Type:    "Normal",
-		Reason:  "NodeReady",
-		Object:  "node/worker-3",
-		Message: "Node worker-3 status is now: NodeReady (2 CPU, 2Gi RAM)",
-		Step:    "KUBELET_OBSERVED",
-	})
+	for _, node := range c.state.Nodes {
+		c.AddEvent(ClusterEvent{
+			Type:    "Normal",
+			Reason:  "NodeReady",
+			Object:  "node/" + node.Name,
+			Message: fmt.Sprintf("Node %s status is now: NodeReady", node.Name),
+			Step:    "KUBELET_OBSERVED",
+			Details: fmt.Sprintf("Capacity %.1f CPU/%dMi; Allocatable %.1f CPU/%dMi", node.CPUCapacity, node.MemoryCapacity, node.CPUAllocatable, node.MemoryAllocatable),
+		})
+	}
 }
 
 func (c *ClusterEngine) GetState() ClusterState {
@@ -178,10 +135,12 @@ func (c *ClusterEngine) GetState() ClusterState {
 }
 
 func (c *ClusterEngine) AddEvent(evt ClusterEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	evt.ID = fmt.Sprintf("evt-%d", time.Now().UnixNano())
 	evt.Timestamp = time.Now().Format("15:04:05")
 	evt.TimeSeconds = int(time.Since(c.startTime).Seconds())
-
 	c.state.Events = append([]ClusterEvent{evt}, c.state.Events...)
 	if len(c.state.Events) > 50 {
 		c.state.Events = c.state.Events[:50]
