@@ -1,15 +1,20 @@
 import React from 'react';
 import { useGameStore } from '../../state/useGameStore';
-import { User, Tag, Cpu, HardDrive, X, Sparkles } from 'lucide-react';
+import { User, Tag, Cpu, HardDrive, X, Sparkles, Activity, CheckCircle2, Clock } from 'lucide-react';
 
 export const RequestPanel: React.FC = () => {
-  const { activeRequest, activeRequestIndex, isRequestPanelOpen, isTutorialActive, actions } = useGameStore();
+  const { activeRequest, activeRequestIndex, activeRequestStatus, cluster, isRequestPanelOpen, isTutorialActive, actions } = useGameStore();
 
   if (!isRequestPanelOpen || !activeRequest) {
     return null;
   }
 
   const isUrgent = activeRequest.characterType === 'urgent' || activeRequest.characterType === 'escalation';
+
+  // Compute live Kubernetes lifecycle progress
+  const targetPod = activeRequest.requirements.podName
+    ? cluster.pods.find((p) => p.name === activeRequest.requirements.podName)
+    : null;
 
   return (
     <div
@@ -70,8 +75,54 @@ export const RequestPanel: React.FC = () => {
         <p className="text-[11px] text-[#C6CDDB] mt-1.5 leading-relaxed font-sans">{activeRequest.description}</p>
       </div>
 
+      {/* Live Kubernetes Lifecycle Banner */}
+      <div className="mt-3 p-2.5 rounded-xl border bg-[#080B17] border-[rgba(132,156,205,0.16)] text-xs font-mono">
+        <div className="text-[9px] text-[#7F8CA3] uppercase font-bold tracking-wider mb-1 flex items-center gap-1">
+          <Activity size={10} className="text-[#4F7CFF]" />
+          <span>Live Kubernetes State:</span>
+        </div>
+
+        {activeRequestStatus === 'SATISFYING' ? (
+          <div className="text-[#00F0FF] font-semibold flex items-center gap-1.5 animate-pulse">
+            <Sparkles size={13} />
+            <span>Workload Ready! Defenses firing at request...</span>
+          </div>
+        ) : activeRequestStatus === 'SERVED' ? (
+          <div className="text-[#54D98C] font-semibold flex items-center gap-1.5">
+            <CheckCircle2 size={13} />
+            <span>Request served successfully</span>
+          </div>
+        ) : activeRequest.requirements.type === 'create-pod' ? (
+          !targetPod ? (
+            <div className="text-[#7F8CA3] flex items-center gap-1.5">
+              <Clock size={12} />
+              <span>Waiting for pod creation command</span>
+            </div>
+          ) : targetPod.phase === 'Pending' && !targetPod.nodeName ? (
+            <div className="text-[#F2B95F] flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-[#F2B95F] animate-ping" />
+              <span>Pod Created (Pending) — Scheduler placing...</span>
+            </div>
+          ) : targetPod.status === 'ContainerCreating' ? (
+            <div className="text-[#6594FF] flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-[#6594FF] animate-pulse" />
+              <span>Scheduled to {targetPod.nodeName} — Creating container...</span>
+            </div>
+          ) : targetPod.phase === 'Running' && targetPod.ready ? (
+            <div className="text-[#54D98C] flex items-center gap-1.5">
+              <CheckCircle2 size={12} />
+              <span>Running & Ready on {targetPod.nodeName}</span>
+            </div>
+          ) : (
+            <div className="text-[#C6CDDB]">{targetPod.status} on {targetPod.nodeName || 'unscheduled'}</div>
+          )
+        ) : (
+          <div className="text-[#C6CDDB]">Execute required kubectl action in terminal</div>
+        )}
+      </div>
+
       {/* Target Requirements Specifications */}
-      <div className="mt-3 p-2.5 bg-[#080B17] rounded-xl border border-[rgba(132,156,205,0.14)] space-y-1.5 text-[11px] font-mono">
+      <div className="mt-2.5 p-2.5 bg-[#080B17] rounded-xl border border-[rgba(132,156,205,0.14)] space-y-1.5 text-[11px] font-mono">
         <div className="text-[9px] text-[#7F8CA3] uppercase font-bold tracking-wider">Specifications:</div>
         
         {activeRequest.requirements.type === 'inspect-nodes' && (

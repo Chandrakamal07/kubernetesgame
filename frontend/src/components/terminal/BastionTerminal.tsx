@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useGameStore } from '../../state/useGameStore';
+import { eventBus } from '../../engine/GameEventBus';
 import { Terminal, CornerDownLeft, HelpCircle, Trash2, Maximize2, Minimize2 } from 'lucide-react';
 
 export const BastionTerminal: React.FC = () => {
@@ -10,6 +11,14 @@ export const BastionTerminal: React.FC = () => {
   const historyCommandsRef = useRef<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const unsub = eventBus.on('INSERT_TERMINAL_INPUT', (cmd) => {
+      setInputVal(cmd);
+      inputRef.current?.focus();
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     if (lastCommand && !historyCommandsRef.current.includes(lastCommand)) {

@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { ClusterSimulator } from '../simulator/ClusterSimulator';
-import { CommandParser, type CommandResult } from '../simulator/CommandParser';
-import type { ClusterState, K8sNode, K8sPod } from '../simulator/types';
-import type { LevelConfig, ScenarioRequest } from '../scenarios/types';
-import { chapter01Levels, tutorialLevel, allChapters } from '../scenarios/chapter01';
-import { soundEngine } from '../engine/AudioEngine';
-import { eventBus } from '../engine/GameEventBus';
-import { matchesRequiredImage } from '../simulator/imageUtils';
+import { ClusterSimulator } from '../simulator/ClusterSimulator.ts';
+import { CommandParser, type CommandResult } from '../simulator/CommandParser.ts';
+import type { ClusterState, K8sNode, K8sPod } from '../simulator/types.ts';
+import type { LevelConfig, RequestStatus, ScenarioRequest } from '../scenarios/types.ts';
+import { chapter01Levels, tutorialLevel, allChapters } from '../scenarios/chapter01.ts';
+import { soundEngine } from '../engine/AudioEngine.ts';
+import { eventBus } from '../engine/GameEventBus.ts';
+import { matchesRequiredImage } from '../simulator/imageUtils.ts';
 
 export interface TerminalEntry {
   id: string;
@@ -51,8 +51,11 @@ export interface GameState {
   level: LevelConfig;
   activeRequestIndex: number;
   activeRequest: ScenarioRequest | null;
+  activeRequestStatus: RequestStatus;
+  completedRequestIds: Set<string>;
   cluster: ClusterState;
   terminalHistory: TerminalEntry[];
+  terminalInputToInsert: string | null;
   currentHintTier: number;
   isHintModalOpen: boolean;
   isLearningViewOpen: boolean;
@@ -76,6 +79,8 @@ let state: GameState = {
   level: chapter01Levels[0],
   activeRequestIndex: 0,
   activeRequest: chapter01Levels[0].requests[0],
+  activeRequestStatus: 'ACTIVE',
+  completedRequestIds: new Set<string>(),
   cluster: getGlobalSimulator().getState(),
   terminalHistory: [
     {
@@ -86,6 +91,7 @@ let state: GameState = {
       timestamp: new Date().toLocaleTimeString(),
     },
   ],
+  terminalInputToInsert: null,
   currentHintTier: 0,
   isHintModalOpen: false,
   isLearningViewOpen: true,
@@ -111,7 +117,6 @@ function updateState(updater: (prev: GameState) => Partial<GameState>) {
   notify();
 }
 
-
 export const gameActions = {
   setScreen(screen: ScreenState) {
     updateState(() => ({ screen }));
@@ -131,6 +136,8 @@ export const gameActions = {
       level: tutorialLevel,
       activeRequestIndex: 0,
       activeRequest: firstRequest,
+      activeRequestStatus: 'ACTIVE',
+      completedRequestIds: new Set<string>(),
       currentHintTier: 0,
       isHintModalOpen: false,
       isLearningViewOpen: true,
@@ -140,6 +147,7 @@ export const gameActions = {
       isTutorialActive: true,
       tutorialStep: 0,
       isTutorialLevel: true,
+      terminalInputToInsert: null,
       terminalHistory: [
         {
           id: `tut-${Date.now()}`,
@@ -204,6 +212,8 @@ export const gameActions = {
       level,
       activeRequestIndex: 0,
       activeRequest: firstRequest,
+      activeRequestStatus: 'ACTIVE',
+      completedRequestIds: new Set<string>(),
       currentHintTier: 0,
       isHintModalOpen: false,
       isRequestPanelOpen: true,
@@ -211,6 +221,7 @@ export const gameActions = {
       commandsExecutedCount: 0,
       isTutorialActive: false,
       isTutorialLevel: levelId === 0,
+      terminalInputToInsert: null,
       terminalHistory: [
         {
           id: `lvl-${Date.now()}`,
@@ -274,7 +285,10 @@ export const gameActions = {
    */
   evaluateActiveObjective(_trigger: 'COMMAND' | 'CLUSTER_STATE', cmdResult?: CommandResult) {
     const req = state.activeRequest;
-    if (!req) return;
+    // Primary State Guard: Only evaluate if there is an active request in ACTIVE status and not completed
+    if (!req || state.activeRequestStatus !== 'ACTIVE' || state.completedRequestIds.has(req.id)) {
+      return;
+    }
 
     const sim = getGlobalSimulator();
     const cluster = sim.getState();
@@ -350,6 +364,7 @@ export const gameActions = {
       if (pendingPod) {
         isSatisfied = true;
         fulfillingPod = pendingPod;
+        fulfillingNode = cluster.nodes[0] || null;
       }
     }
     // 7. Delete Pod Objective (STATE)
@@ -362,58 +377,113 @@ export const gameActions = {
     }
 
     if (isSatisfied) {
-      gameActions.completeActiveRequest(fulfillingPod, fulfillingNode);
+      gameActions.beginSatisfyingRequest(req, fulfillingPod, fulfillingNode);
     }
   },
 
-  completeActiveRequest(fulfillingPod: K8sPod | null, fulfillingNode: K8sNode | null) {
+  /**
+   * Transitions active request atomically: ACTIVE -> SATISFYING.
+   * Emits REQUEST_SATISFYING so Battlefield cannon aims and fires toward the customer entity.
+   * Customer stops moving and freezes SLA timer.
+   */
+  beginSatisfyingRequest(req: ScenarioRequest, fulfillingPod: K8sPod | null, fulfillingNode: K8sNode | null) {
+    if (state.activeRequestStatus !== 'ACTIVE' || state.completedRequestIds.has(req.id)) {
+      return;
+    }
+
+    // Atomically lock request into SATISFYING state to prevent double execution
+    updateState(() => ({
+      activeRequestStatus: 'SATISFYING',
+    }));
+
+    const node = fulfillingNode || state.cluster.nodes.find((n) => n.laneIndex === req.lane) || state.cluster.nodes[0] || null;
+
+    eventBus.emit('REQUEST_SATISFYING', {
+      requestId: req.id,
+      request: req,
+      fulfillingPod,
+      fulfillingNode: node,
+    });
+  },
+
+  /**
+   * Finalizes request when the projectile physically reaches the customer entity.
+   * Transitions SATISFYING -> SERVED.
+   * Grants XP and increments SLA streak EXACTLY ONCE.
+   */
+  finalizeServedRequest(requestId: string) {
     const req = state.activeRequest;
-    if (!req) return;
+    if (!req || req.id !== requestId || state.activeRequestStatus !== 'SATISFYING' || state.completedRequestIds.has(requestId)) {
+      return;
+    }
+
+    const newCompleted = new Set(state.completedRequestIds);
+    newCompleted.add(requestId);
 
     const sim = getGlobalSimulator();
-    
     const hintPenalty = state.currentHintTier === 0 ? 50 : state.currentHintTier === 1 ? 0 : state.currentHintTier === 2 ? -5 : state.currentHintTier === 3 ? -10 : -20;
     const pointsAwarded = Math.max(50, req.rewardPoints + hintPenalty);
-    sim.updateScore(pointsAwarded, true);
 
+    // Update score and SLA streak in cluster state EXACTLY ONCE
+    sim.updateScore(pointsAwarded, true);
     soundEngine.playImpact();
-    // Emit OBJECTIVE_SATISFIED with fulfillingNode so projectile originates from THAT node platform
-    eventBus.emit('OBJECTIVE_SATISFIED', {
-      request: req,
+
+    updateState(() => ({
+      activeRequestStatus: 'SERVED',
+      completedRequestIds: newCompleted,
+      playState: 'REQUEST_COMPLETED',
+    }));
+
+    eventBus.emit('REQUEST_SERVED', {
+      requestId: req.id,
       points: pointsAwarded,
-      fulfillingPod,
-      fulfillingNode,
+      request: req,
+    });
+    eventBus.emit('XP_AWARDED', {
+      points: pointsAwarded,
+      totalScore: sim.getState().score,
     });
 
-    const nextIdx = state.activeRequestIndex + 1;
-    if (nextIdx < state.level.requests.length) {
-      const nextReq = state.level.requests[nextIdx];
-      updateState(() => ({
-        activeRequestIndex: nextIdx,
-        activeRequest: nextReq,
-        currentHintTier: 0,
-        playState: 'REQUEST_ACTIVE',
-      }));
+    // Advance to next request after 600ms result feedback delay
+    setTimeout(() => {
+      const nextIdx = state.activeRequestIndex + 1;
+      if (nextIdx < state.level.requests.length) {
+        const nextReq = state.level.requests[nextIdx];
+        updateState(() => ({
+          activeRequestIndex: nextIdx,
+          activeRequest: nextReq,
+          activeRequestStatus: 'ACTIVE',
+          currentHintTier: 0,
+          playState: 'REQUEST_ACTIVE',
+        }));
 
-      setTimeout(() => {
         soundEngine.playAlert();
         eventBus.emit('CUSTOMER_SPAWNED', nextReq);
-      }, 1000);
-    } else {
-      updateState(() => ({
-        playState: 'LEVEL_COMPLETE',
-      }));
-      soundEngine.playLevelComplete();
-      eventBus.emit('LEVEL_COMPLETED', state.level);
-    }
+      } else {
+        updateState(() => ({
+          playState: 'LEVEL_COMPLETE',
+        }));
+        soundEngine.playLevelComplete();
+        eventBus.emit('LEVEL_COMPLETED', state.level);
+      }
+    }, 600);
   },
 
   handleCustomerReachedNode(customerReq: ScenarioRequest) {
+    if (state.activeRequestStatus !== 'ACTIVE' || state.activeRequest?.id !== customerReq.id) {
+      return;
+    }
+
+    updateState(() => ({
+      activeRequestStatus: 'BREACHED',
+    }));
+
     const sim = getGlobalSimulator();
     sim.damageNode(customerReq.lane, 25);
     sim.updateScore(0, false);
     soundEngine.playDamage();
 
+    eventBus.emit('REQUEST_BREACHED', { requestId: customerReq.id, lane: customerReq.lane });
     eventBus.emit('NODE_DAMAGED', { laneIndex: customerReq.lane, health: sim.getState().health });
 
     if (sim.getState().health <= 0) {
@@ -464,21 +534,41 @@ export const gameActions = {
     soundEngine.setMuted(nextMute);
     updateState(() => ({ isMuted: nextMute }));
   },
+
+  insertTerminalInput(command: string) {
+    updateState(() => ({ terminalInputToInsert: command }));
+    eventBus.emit('INSERT_TERMINAL_INPUT', command);
+  },
+
+  clearTerminalInputInsert() {
+    updateState(() => ({ terminalInputToInsert: null }));
+  },
 };
 
 // Subscribe simulator state changes to global store and trigger event-driven objective evaluation
 getGlobalSimulator().subscribe((clusterState) => {
   updateState(() => ({ cluster: clusterState }));
   // Event-driven evaluation when cluster state changes (e.g. pod reaches Ready, pod deleted)
-  gameActions.evaluateActiveObjective('CLUSTER_STATE');
+  if (state.playState === 'REQUEST_ACTIVE' && state.activeRequestStatus === 'ACTIVE') {
+    gameActions.evaluateActiveObjective('CLUSTER_STATE');
+  }
 });
 
 // Subscribe to domain event bus
 eventBus.on('POD_READY', () => {
-  gameActions.evaluateActiveObjective('CLUSTER_STATE');
+  if (state.playState === 'REQUEST_ACTIVE' && state.activeRequestStatus === 'ACTIVE') {
+    gameActions.evaluateActiveObjective('CLUSTER_STATE');
+  }
 });
+
 eventBus.on('POD_DELETED', () => {
-  gameActions.evaluateActiveObjective('CLUSTER_STATE');
+  if (state.playState === 'REQUEST_ACTIVE' && state.activeRequestStatus === 'ACTIVE') {
+    gameActions.evaluateActiveObjective('CLUSTER_STATE');
+  }
+});
+
+eventBus.on('PROJECTILE_HIT', ({ requestId }) => {
+  gameActions.finalizeServedRequest(requestId);
 });
 
 export function useGameStore() {

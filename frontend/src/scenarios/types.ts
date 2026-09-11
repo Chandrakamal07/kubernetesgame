@@ -31,6 +31,25 @@ export interface CustomerRequirement {
   manifestFile?: string;
 }
 
+export type RequestStatus = 
+  | 'PENDING' 
+  | 'ACTIVE' 
+  | 'SATISFYING' 
+  | 'SERVED' 
+  | 'BREACHED' 
+  | 'FAILED';
+
+export interface ActiveRequestState {
+  id: string;
+  status: RequestStatus;
+  rewardGranted: boolean;
+  fulfillingPodName?: string;
+  fulfillingNodeName?: string;
+  startedTimestamp?: number;
+  servedTimestamp?: number;
+  breachedTimestamp?: number;
+}
+
 export interface ScenarioRequest {
   id: string;
   customerName: string;
@@ -44,6 +63,7 @@ export interface ScenarioRequest {
   rewardPoints: number;
   hints: [string, string, string, string]; // 4 progressive hint tiers
   learningNote: string;
+  status?: RequestStatus;
 }
 
 export interface LevelConfig {

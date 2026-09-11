@@ -1,4 +1,5 @@
-import type { ScenarioRequest } from '../scenarios/types';
+import type { ScenarioRequest } from '../scenarios/types.ts';
+import { eventBus } from './GameEventBus.ts';
 
 export interface CustomerEntity {
   id: string;
@@ -12,7 +13,7 @@ export interface CustomerEntity {
   height: number;
   speed: number;
   walkCycle: number;
-  status: 'active' | 'hit' | 'reached_node';
+  status: 'active' | 'satisfying' | 'served' | 'reached_node' | 'hit' | 'breached';
   remainingSlaSeconds: number;
   totalSlaSeconds: number;
 }
@@ -34,6 +35,8 @@ export interface WorkloadCapsuleEntity {
 
 export interface ProjectileEntity {
   id: string;
+  requestId: string;
+  sourceNodeName: string;
   originLaneIndex: number;
   targetLaneIndex: number;
   startX: number;
@@ -164,6 +167,8 @@ export class EntityManager {
    * firing across lanes toward target customer coordinates (targetX, targetY).
    */
   public spawnProjectile(
+    requestId: string,
+    sourceNodeName: string,
     originLaneIndex: number,
     targetLaneIndex: number,
     startX: number,
@@ -173,6 +178,8 @@ export class EntityManager {
   ): ProjectileEntity {
     const projectile: ProjectileEntity = {
       id: `proj-${Date.now()}-${Math.random()}`,
+      requestId,
+      sourceNodeName,
       originLaneIndex,
       targetLaneIndex,
       startX,
@@ -263,6 +270,7 @@ export class EntityManager {
           c.status = 'reached_node';
         }
       }
+      // Note: If c.status === 'satisfying', customer position & SLA are frozen while projectile is in flight!
     }
 
     // 2. Update Workload Capsules
@@ -301,6 +309,23 @@ export class EntityManager {
           p.currentX = p.targetX;
           p.currentY = p.targetY;
           p.isComplete = true;
+
+          // Emit physical impact event
+          eventBus.emit('PROJECTILE_HIT', {
+            requestId: p.requestId,
+            targetX: p.targetX,
+            targetY: p.targetY,
+            sourceNodeName: p.sourceNodeName,
+          });
+
+          this.spawnExplosionParticles(p.targetX, p.targetY, '#4FD1C5', 30);
+          this.spawnFloatingText('REQUEST SERVED!', p.targetX, p.targetY - 44, '#64D98B');
+
+          // Mark customer as served
+          const targetCust = this.customers.find((c) => c.request.id === p.requestId);
+          if (targetCust) {
+            targetCust.status = 'served';
+          }
         } else {
           p.currentX = p.startX + (p.targetX - p.startX) * p.progress;
           p.currentY = p.startY + (p.targetY - p.startY) * p.progress;
@@ -308,6 +333,8 @@ export class EntityManager {
       }
     }
     this.projectiles = this.projectiles.filter((p) => !p.isComplete);
+    // Remove served or hit customers only after physical projectile impact has completed
+    this.customers = this.customers.filter((c) => c.status !== 'served' && c.status !== 'hit');
 
     // 4. Update Scheduler Pulses
     for (const pulse of this.pulses) {

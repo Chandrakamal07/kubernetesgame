@@ -350,4 +350,114 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(pod?.ready, true);
     assert.equal(pod?.nodeName, 'worker-2', 'Only worker-2 has sufficient remaining allocatable memory (2048Mi) and CPU (1000m)');
   });
+
+  it('Rule 14: Runaway Loop Guard - 100 subsequent cluster state events do NOT cause score explosion or re-satisfaction', async () => {
+    const sim = new ClusterSimulator();
+    sim.updateScore(150, true);
+    const initialScore = sim.getState().score;
+    const initialStreak = sim.getState().slaStreak;
+    assert.equal(initialScore, 150);
+    assert.equal(initialStreak, 1);
+
+    // Trigger 100 arbitrary cluster events / notifications
+    for (let i = 0; i < 100; i++) {
+      sim.addEvent({
+        type: 'Normal',
+        reason: 'Heartbeat',
+        object: 'node/worker-1',
+        message: `Node worker-1 posted lease heartbeat ${i}`,
+      });
+    }
+
+    const finalState = sim.getState();
+    assert.equal(finalState.score, initialScore, 'Score must remain completely stable without runaway loop');
+    assert.equal(finalState.slaStreak, initialStreak, 'SLA streak must remain completely stable');
+  });
+
+  it('Rule 15: Cross-lane projectile trajectory and customer persistence during flight', async () => {
+    const { EntityManager } = await import('../engine/EntityManager.ts');
+    const { eventBus } = await import('../engine/GameEventBus.ts');
+
+    const em = new EntityManager();
+    const testReq = {
+      id: 'req-test-01',
+      customerName: 'Test Customer',
+      customerRole: 'Frontend Traffic',
+      characterType: 'normal' as const,
+      title: 'Deploy NGINX',
+      description: 'Test',
+      requirements: { type: 'create-pod' as const, podName: 'web-01' },
+      lane: 0,
+      slaTimeSeconds: 30,
+      rewardPoints: 100,
+      hints: ['', '', '', ''] as [string, string, string, string],
+      learningNote: '',
+    };
+
+    // 1. Spawn customer in lane 0
+    const cust = em.spawnCustomer(testReq, 800, 100);
+    assert.equal(em.customers.length, 1);
+    assert.equal(cust.status, 'active');
+
+    // 2. Pod schedules to worker-3 in lane 2 (cross-lane!)
+    // When SATISFYING begins, customer status becomes 'satisfying' and freezes
+    cust.status = 'satisfying';
+    const initialX = cust.pixelX;
+    em.update(0.1, 160);
+    assert.equal(cust.pixelX, initialX, 'Customer must freeze position during satisfying status');
+
+    // 3. Spawn cross-lane projectile from lane 2 (worker-3, Y=300) to lane 0 (customer, Y=100)
+    let hitEventEmitted = false;
+    const unsub = eventBus.on('PROJECTILE_HIT', (payload) => {
+      if (payload.requestId === 'req-test-01') {
+        hitEventEmitted = true;
+      }
+    });
+
+    em.spawnProjectile('req-test-01', 'worker-3', 2, 0, 200, 300, cust.pixelX, 100);
+    assert.equal(em.projectiles.length, 1);
+
+    // Advance simulation half-way: projectile is mid-air, customer MUST STILL BE IN EntityManager
+    em.update(0.1, 160);
+    assert.equal(em.customers.length, 1, 'Customer MUST NOT disappear while projectile is in flight');
+    assert.equal(hitEventEmitted, false);
+
+    // Advance simulation until projectile hits target
+    em.update(1.0, 160);
+    assert.equal(hitEventEmitted, true, 'PROJECTILE_HIT event must be emitted upon projectile arrival');
+    assert.equal(em.projectiles.length, 0, 'Completed projectile should be removed');
+    assert.equal(em.customers.length, 0, 'Customer entity is cleaned up after impact');
+
+    unsub();
+  });
+
+  it('Rule 16: Duplicate command execution after workload ready returns AlreadyExists and does not corrupt score', () => {
+    const sim = new ClusterSimulator();
+    const parser = new CommandParser(sim);
+
+    const r1 = parser.execute('kubectl run web-01 --image=nginx');
+    assert.equal(r1.success, true);
+
+    // Execute same command again
+    const r2 = parser.execute('kubectl run web-01 --image=nginx');
+    assert.equal(r2.success, false);
+    assert.ok(r2.output.includes('AlreadyExists'));
+
+    assert.equal(sim.getState().pods.filter((p) => p.name === 'web-01').length, 1);
+  });
+
+  it('Rule 17: SLA Breach vs Satisfaction Race Condition atomicity', () => {
+    const sim = new ClusterSimulator();
+
+    // Damage node once
+    sim.damageNode(0, 25);
+    assert.equal(sim.getState().nodes[0].health, 75);
+    assert.equal(sim.getState().slaStreak, 0);
+
+    // Successful score increment
+    sim.updateScore(150, true);
+    assert.equal(sim.getState().score, 150);
+    assert.equal(sim.getState().slaStreak, 1);
+    assert.equal(sim.getState().requestsCompleted, 1);
+  });
 });

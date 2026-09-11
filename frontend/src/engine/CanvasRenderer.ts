@@ -397,43 +397,41 @@ export class CanvasRenderer {
     ctx.strokeRect(pixelX - 20, pixelY, 12, 10);
 
     // Overhead Compact Ticket Card & SLA Meter
-    const cardW = 92;
-    const cardH = 24;
+    const isSatisfying = cust.status === 'satisfying';
+    const cardW = 108;
+    const cardH = 26;
     const cardX = pixelX - cardW / 2;
-    const cardY = pixelY - 42;
+    const cardY = pixelY - 44;
 
-    ctx.fillStyle = 'rgba(13, 18, 32, 0.95)';
-    ctx.strokeStyle = isUrgent ? '#F06D78' : 'rgba(79, 124, 255, 0.45)';
-    ctx.lineWidth = 1;
+    ctx.fillStyle = isSatisfying ? 'rgba(6, 78, 92, 0.95)' : 'rgba(13, 18, 32, 0.95)';
+    ctx.strokeStyle = isSatisfying ? '#00F0FF' : isUrgent ? '#F06D78' : 'rgba(79, 124, 255, 0.45)';
+    ctx.lineWidth = isSatisfying ? 1.5 : 1;
+    if (isSatisfying) {
+      ctx.shadowColor = '#00F0FF';
+      ctx.shadowBlur = 8;
+    }
     ctx.beginPath();
     ctx.roundRect(cardX, cardY, cardW, cardH, 4);
     ctx.fill();
     ctx.stroke();
+    ctx.shadowBlur = 0;
 
-    ctx.fillStyle = '#F7F9FF';
-    ctx.font = 'bold 9px "JetBrains Mono", sans-serif';
+    ctx.fillStyle = isSatisfying ? '#00F0FF' : '#F7F9FF';
+    ctx.font = 'bold 8.5px "JetBrains Mono", sans-serif';
     ctx.textAlign = 'left';
-    const reqText =
-      request.requirements.type === 'inspect-nodes'
-        ? 'get nodes'
-        : request.requirements.type === 'inspect-pods-wide'
-        ? 'get pods -o wide'
-        : request.requirements.type === 'describe-node'
-        ? 'describe node'
-        : request.requirements.type === 'failed-scheduling'
-        ? 'FailedScheduling'
-        : request.requirements.type === 'delete-pod'
-        ? `del ${request.requirements.podName}`
-        : `${request.requirements.podName || 'pod'}`;
-    ctx.fillText(reqText, cardX + 5, cardY + 11);
+
+    const reqLabel = isSatisfying 
+      ? `🎯 SERVING...` 
+      : `REQ: ${request.title.length > 13 ? request.title.substring(0, 12) + '…' : request.title}`;
+    ctx.fillText(reqLabel, cardX + 5, cardY + 11);
 
     const slaFrac = Math.max(0, remainingSlaSeconds / totalSlaSeconds);
     ctx.fillStyle = '#151E33';
-    ctx.fillRect(cardX + 5, cardY + 15, cardW - 10, 3.5);
+    ctx.fillRect(cardX + 5, cardY + 16, cardW - 10, 3.5);
 
-    const slaColor = slaFrac > 0.5 ? '#54D98C' : slaFrac > 0.25 ? '#F2B95F' : '#F06D78';
+    const slaColor = isSatisfying ? '#00F0FF' : slaFrac > 0.5 ? '#54D98C' : slaFrac > 0.25 ? '#F2B95F' : '#F06D78';
     ctx.fillStyle = slaColor;
-    ctx.fillRect(cardX + 5, cardY + 15, (cardW - 10) * slaFrac, 3.5);
+    ctx.fillRect(cardX + 5, cardY + 16, (cardW - 10) * (isSatisfying ? 1 : slaFrac), 3.5);
 
     ctx.restore();
   }

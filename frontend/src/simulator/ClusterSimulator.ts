@@ -17,6 +17,7 @@ export class ClusterSimulator {
   private scheduler: KubeScheduler;
   private listeners: Set<ClusterListener> = new Set();
   private startTime: number = Date.now();
+  private epoch: number = 0;
 
   constructor(initialNodes?: K8sNode[]) {
     this.scheduler = new KubeScheduler();
@@ -136,6 +137,7 @@ export class ClusterSimulator {
   }
 
   public reset(nodes?: K8sNode[], namespace = 'chapter1-level1') {
+    this.epoch += 1;
     this.state = {
       clusterName: 'k8s.training.cluster.local',
       namespace,
@@ -247,8 +249,11 @@ export class ClusterSimulator {
     });
     eventBus.emit('POD_CREATED', { pod });
 
+    const curEpoch = this.epoch;
+
     // Step 2: Desired state persisted to etcd
     setTimeout(() => {
+      if (this.epoch !== curEpoch) return;
       this.addEvent({
         type: 'Normal',
         reason: 'Persisted',
@@ -260,6 +265,7 @@ export class ClusterSimulator {
 
     // Step 3: Trigger scheduler pipeline
     setTimeout(() => {
+      if (this.epoch !== curEpoch) return;
       this.schedulePod(pod);
     }, 450);
 
@@ -345,8 +351,11 @@ export class ClusterSimulator {
     this.notifyListeners();
     eventBus.emit('POD_SCHEDULED', { pod, node: targetNode });
 
+    const curEpoch = this.epoch;
+
     // Step 4: Kubelet observes assignment, sets up sandbox/CNI, and starts container
     setTimeout(() => {
+      if (this.epoch !== curEpoch) return;
       pod.status = 'ContainerCreating';
       this.addEvent({
         type: 'Normal',
@@ -358,6 +367,7 @@ export class ClusterSimulator {
       this.notifyListeners();
 
       setTimeout(() => {
+        if (this.epoch !== curEpoch) return;
         // Container runtime starts workload
         pod.phase = 'Running';
         pod.status = 'Running';
@@ -387,6 +397,7 @@ export class ClusterSimulator {
         eventBus.emit('POD_READY', { pod, node: targetNode });
 
         setTimeout(() => {
+          if (this.epoch !== curEpoch) return;
           if (targetNode) targetNode.isCharging = false;
           this.notifyListeners();
         }, 500);
@@ -442,8 +453,10 @@ export class ClusterSimulator {
     this.notifyListeners();
     eventBus.emit('POD_DELETED', { podName: name });
 
+    const curEpoch = this.epoch;
     // Trigger retry for any pending pods waiting for resources
     setTimeout(() => {
+      if (this.epoch !== curEpoch) return;
       this.retryPendingPods();
     }, 200);
 

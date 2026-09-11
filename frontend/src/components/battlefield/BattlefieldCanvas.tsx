@@ -50,42 +50,57 @@ export const BattlefieldCanvas: React.FC = () => {
       entityManager.spawnCustomer(req, rect.width, centerY);
     });
 
-    const unsubscribeSatisfied = eventBus.on('OBJECTIVE_SATISFIED', ({ request, points, fulfillingNode }) => {
+    const unsubscribeSatisfying = eventBus.on('REQUEST_SATISFYING', ({ requestId, request, fulfillingNode }) => {
       const rect = canvas.getBoundingClientRect();
       const laneHeight = rect.height / 3;
 
-      // Authentic Kubernetes Firing: Originates strictly from fulfillingNode platform hosting the Pod
+      // 1. Mark target customer as satisfying in EntityManager (freezes motion and SLA countdown)
+      const targetCustomer = entityManager.customers.find((c) => c.request.id === requestId);
+      if (targetCustomer) {
+        targetCustomer.status = 'satisfying';
+      }
+
+      // 2. Firing origin comes from host fulfilling node
       const originLane = fulfillingNode ? fulfillingNode.laneIndex : request.lane;
       const targetLane = request.lane;
 
       const originCenterY = (originLane + 0.5) * laneHeight;
       const targetCenterY = (targetLane + 0.5) * laneHeight;
       const cannonX = 200;
+      const targetX = targetCustomer ? targetCustomer.pixelX : rect.width - 120;
 
-      const targetCustomer = entityManager.customers.find((c) => c.request.id === request.id);
-      const targetX = targetCustomer ? targetCustomer.pixelX : rect.width - 100;
-
-      // Aim fulfilling node cannon barrel diagonally toward target
-      const hostNode = cluster.nodes.find((n) => n.laneIndex === originLane);
+      // 3. Aim fulfilling node cannon barrel diagonally toward target
+      const hostNode = cluster.nodes.find((n) => n.laneIndex === originLane) || cluster.nodes[0];
       if (hostNode) {
         hostNode.turretAngle = Math.atan2(targetCenterY - originCenterY, targetX - cannonX);
         hostNode.lastFiredTimestamp = Date.now();
       }
 
+      // 4. Play cannon sound and emit CANNON_FIRED
       soundEngine.playCannonFire();
-      entityManager.spawnProjectile(originLane, targetLane, cannonX, originCenterY, targetX, targetCenterY);
+      eventBus.emit('CANNON_FIRED', {
+        requestId,
+        nodeName: hostNode?.name || 'worker-1',
+        originLane,
+        targetLane,
+      });
 
+      // 5. Spawn projectile traveling diagonally across lanes
+      entityManager.spawnProjectile(
+        requestId,
+        hostNode?.name || 'worker-1',
+        originLane,
+        targetLane,
+        cannonX,
+        originCenterY,
+        targetX,
+        targetCenterY
+      );
+
+      // 6. Reset turret angle after brief firing duration
       setTimeout(() => {
-        entityManager.spawnExplosionParticles(targetX, targetCenterY, '#4FD1C5', 30);
-        entityManager.spawnFloatingText(`+${points} XP`, targetX, targetCenterY - 26, '#E3BC72');
-        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, targetCenterY - 44, '#64D98B');
-
-        entityManager.customers = entityManager.customers.filter((c) => c.request.id !== request.id);
-
-        setTimeout(() => {
-          if (hostNode) hostNode.turretAngle = 0;
-        }, 400);
-      }, 340);
+        if (hostNode) hostNode.turretAngle = 0;
+      }, 450);
     });
 
     let animId: number;
@@ -104,7 +119,8 @@ export const BattlefieldCanvas: React.FC = () => {
             cust.status = 'hit';
           }
         });
-        entityManager.customers = entityManager.customers.filter((c) => c.status === 'active');
+        // Retain active and satisfying customers; remove hit / reached_node entities
+        entityManager.customers = entityManager.customers.filter((c) => c.status === 'active' || c.status === 'satisfying');
       }
 
       renderer.render(dt, cluster.nodes, entityManager, activeRequestRef.current?.lane ?? null, isPaused);
@@ -118,7 +134,7 @@ export const BattlefieldCanvas: React.FC = () => {
       cancelAnimationFrame(animId);
       window.removeEventListener('resize', resize);
       unsubscribeSpawn();
-      unsubscribeSatisfied();
+      unsubscribeSatisfying();
     };
   }, [cluster.nodes, isPaused, actions]);
 

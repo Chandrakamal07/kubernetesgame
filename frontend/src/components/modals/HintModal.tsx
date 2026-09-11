@@ -1,6 +1,6 @@
 import React from 'react';
 import { useGameStore } from '../../state/useGameStore';
-import { Lightbulb, X, Lock, Unlock, ArrowRight, CornerDownLeft, Sparkles } from 'lucide-react';
+import { Lightbulb, X, Lock, CheckCircle2, ArrowRight, CornerDownLeft, Sparkles, Terminal } from 'lucide-react';
 
 export const HintModal: React.FC = () => {
   const { isHintModalOpen, activeRequest, currentHintTier, actions } = useGameStore();
@@ -15,8 +15,8 @@ export const HintModal: React.FC = () => {
   ];
 
   return (
-    <div className="fixed inset-0 bg-[#050711]/85 backdrop-blur-md flex items-center justify-center p-4 z-50 select-none animate-in fade-in duration-200">
-      <div className="w-full max-w-lg bg-[#0D1220] border border-[#F2B95F]/40 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.7),0_0_30px_rgba(242,185,95,0.15)] p-5 overflow-hidden">
+    <div className="fixed inset-0 bg-[#03060F]/65 backdrop-blur-[2px] flex items-center justify-center p-4 z-50 select-none animate-in fade-in duration-200">
+      <div className="w-full max-w-lg bg-[#0D1220]/95 border border-[#F2B95F]/40 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.8),0_0_30px_rgba(242,185,95,0.15)] p-5 overflow-hidden backdrop-blur-xl">
         {/* Modal Header */}
         <div className="flex items-center justify-between pb-3 border-b border-[rgba(132,156,205,0.16)]">
           <div className="flex items-center gap-2 text-[#F2B95F] font-mono font-bold text-sm">
@@ -38,47 +38,66 @@ export const HintModal: React.FC = () => {
           <div className="text-[11px] text-[#7F8CA3] mt-1 font-sans">{activeRequest.description}</div>
         </div>
 
-        {/* Progressive Hint Tiers */}
-        <div className="mt-4 space-y-2.5">
+        {/* Progressive Hint Tiers - Accordion Style */}
+        <div className="mt-4 space-y-2">
           {activeRequest.hints.map((hintText, idx) => {
             const tierNum = idx + 1;
-            const isUnlocked = currentHintTier >= tierNum;
+            const isLatestUnlocked = currentHintTier === tierNum;
+            const isPreviousUnlocked = currentHintTier > tierNum;
             const meta = hintLabels[idx];
+
+            if (isPreviousUnlocked) {
+              // Compact summary row for previously unlocked hints
+              return (
+                <div
+                  key={idx}
+                  className="px-3 py-2 rounded-lg bg-[#0E1526]/80 border border-[rgba(132,156,205,0.14)] flex items-center justify-between text-xs"
+                >
+                  <div className="flex items-center gap-2 font-mono text-[#54D98C]">
+                    <CheckCircle2 size={13} className="text-[#54D98C] shrink-0" />
+                    <span className="font-semibold text-[11px]">{meta.title}</span>
+                  </div>
+                  <span className="text-[11px] text-[#C6CDDB] font-mono truncate max-w-[200px]">{hintText}</span>
+                </div>
+              );
+            }
 
             return (
               <div
                 key={idx}
                 className={`p-3 rounded-xl border transition-all ${
-                  isUnlocked
-                    ? 'bg-[#151E33]/90 border-[#F2B95F]/45 shadow-sm'
+                  isLatestUnlocked
+                    ? 'bg-[#151E33] border-[#F2B95F]/50 shadow-md shadow-[#F2B95F]/10'
                     : 'bg-[#080B17]/60 border-[rgba(132,156,205,0.1)] opacity-50'
                 }`}
               >
                 <div className="flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2 font-mono font-semibold">
-                    {isUnlocked ? (
-                      <Unlock size={13} className="text-[#F2B95F]" />
+                    {isLatestUnlocked ? (
+                      <Lightbulb size={14} className="text-[#F2B95F]" />
                     ) : (
                       <Lock size={13} className="text-[#7F8CA3]" />
                     )}
-                    <span className={isUnlocked ? 'text-[#F2B95F]' : 'text-[#7F8CA3]'}>{meta.title}</span>
+                    <span className={isLatestUnlocked ? 'text-[#F2B95F]' : 'text-[#7F8CA3]'}>{meta.title}</span>
                   </div>
                   <span className="text-[10px] font-mono text-[#7F8CA3]">{meta.penalty}</span>
                 </div>
 
-                {isUnlocked ? (
-                  <div className="mt-2 text-xs text-[#F7F9FF] font-mono bg-[#080B17] p-2.5 rounded-lg border border-[rgba(132,156,205,0.16)] flex items-center justify-between">
-                    <span className="text-[#54D98C] font-semibold">{hintText}</span>
+                {isLatestUnlocked ? (
+                  <div className="mt-2.5 text-xs text-[#F7F9FF] font-mono bg-[#080B17] p-2.5 rounded-lg border border-[rgba(132,156,205,0.16)] flex items-center justify-between gap-2">
+                    <span className="text-[#54D98C] font-semibold leading-relaxed break-all">{hintText}</span>
                     {tierNum === 4 && (
                       <button
                         onClick={() => {
-                          actions.executeCommand(hintText.replace('Execute: ', '').trim());
+                          const cmd = hintText.replace('Execute: ', '').trim();
+                          actions.insertTerminalInput(cmd);
                           actions.closeHintModal();
                         }}
-                        className="ml-2 px-2.5 py-1 bg-[#4F7CFF] hover:bg-[#6594FF] text-white rounded text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 transition-all hover:scale-105 active:scale-95 cursor-pointer"
-                        title="Execute in terminal"
+                        className="px-2.5 py-1.5 bg-[#4F7CFF] hover:bg-[#6594FF] text-white rounded-lg text-[10px] font-mono font-bold flex items-center gap-1.5 shrink-0 transition-all hover:scale-105 active:scale-95 cursor-pointer shadow-sm shadow-[#4F7CFF]/30"
+                        title="Insert command into terminal input without running"
                       >
-                        <span>RUN</span>
+                        <Terminal size={11} />
+                        <span>INSERT COMMAND</span>
                         <CornerDownLeft size={10} />
                       </button>
                     )}
