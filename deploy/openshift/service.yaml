@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: openshift-defense-svc
+  namespace: openshift-learning-game
+  labels:
+    app: openshift-defense
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: openshift-defense
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: openshift-defense-route
+  namespace: openshift-learning-game
+  labels:
+    app: openshift-defense
+spec:
+  to:
+    kind: Service
+    name: openshift-defense-svc
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-defense-config
+  namespace: openshift-learning-game
+data:
+  cluster_namespace: "chapter1-level1"
+  simulation_mode: "true"

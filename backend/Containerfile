@@ -1,0 +1,26 @@
+# Stage 1: Build Frontend Assets
+FROM registry.access.redhat.com/ubi9/nodejs-20:latest AS frontend-builder
+WORKDIR /opt/app-root/src
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Build Go Binary
+FROM registry.access.redhat.com/ubi9/go-toolset:latest AS backend-builder
+WORKDIR /opt/app-root/src
+COPY backend/go.mod ./
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server/main.go
+
+# Stage 3: Minimal Production Image
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+WORKDIR /opt/app-root
+COPY --from=backend-builder /opt/app-root/src/server ./server
+COPY --from=frontend-builder /opt/app-root/src/dist ./frontend/dist
+
+ENV PORT=8080
+EXPOSE 8080
+
+USER 1001
+ENTRYPOINT ["./server"]

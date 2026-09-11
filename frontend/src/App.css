@@ -1,0 +1,13 @@
+/* Kubernetes Defense Application Specific Layout Styles */
+.game-viewport {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: 'Outfit', 'Inter', sans-serif;
+}
+
+.subtle-grid-bg {
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 32px 32px;
+}

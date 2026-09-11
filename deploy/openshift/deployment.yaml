@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openshift-defense
+  namespace: openshift-learning-game
+  labels:
+    app: openshift-defense
+    app.kubernetes.io/part-of: openshift-learning-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: openshift-defense
+  template:
+    metadata:
+      labels:
+        app: openshift-defense
+    spec:
+      containers:
+        - name: openshift-defense
+          image: image-registry.openshift-image-registry.svc:5000/openshift-learning-game/openshift-defense:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: CLUSTER_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: openshift-defense-config
+                  key: cluster_namespace
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
