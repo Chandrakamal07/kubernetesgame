@@ -111,20 +111,6 @@ function updateState(updater: (prev: GameState) => Partial<GameState>) {
   notify();
 }
 
-// Subscribe simulator state changes to global store and trigger event-driven objective evaluation
-getGlobalSimulator().subscribe((clusterState) => {
-  updateState(() => ({ cluster: clusterState }));
-  // Event-driven evaluation when cluster state changes (e.g. pod reaches Ready, pod deleted)
-  gameActions.evaluateActiveObjective('CLUSTER_STATE');
-});
-
-// Subscribe to domain event bus
-eventBus.on('POD_READY', () => {
-  gameActions.evaluateActiveObjective('CLUSTER_STATE');
-});
-eventBus.on('POD_DELETED', () => {
-  gameActions.evaluateActiveObjective('CLUSTER_STATE');
-});
 
 export const gameActions = {
   setScreen(screen: ScreenState) {
@@ -479,6 +465,21 @@ export const gameActions = {
     updateState(() => ({ isMuted: nextMute }));
   },
 };
+
+// Subscribe simulator state changes to global store and trigger event-driven objective evaluation
+getGlobalSimulator().subscribe((clusterState) => {
+  updateState(() => ({ cluster: clusterState }));
+  // Event-driven evaluation when cluster state changes (e.g. pod reaches Ready, pod deleted)
+  gameActions.evaluateActiveObjective('CLUSTER_STATE');
+});
+
+// Subscribe to domain event bus
+eventBus.on('POD_READY', () => {
+  gameActions.evaluateActiveObjective('CLUSTER_STATE');
+});
+eventBus.on('POD_DELETED', () => {
+  gameActions.evaluateActiveObjective('CLUSTER_STATE');
+});
 
 export function useGameStore() {
   const [storeState, setStoreState] = useState<GameState>(state);
