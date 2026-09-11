@@ -53,16 +53,17 @@ export const BattlefieldCanvas: React.FC = () => {
       const cannonX = 210;
       const targetCustomer = entityManager.customers.find((c) => c.request.id === request.id);
       const targetX = targetCustomer ? targetCustomer.pixelX : rect.width - 100;
+      const targetY = targetCustomer ? targetCustomer.pixelY : targetLaneCenterY;
 
       // Game lanes never dictate Kubernetes scheduling. The visual shot originates
       // from the node actually selected by the scheduler, even across lanes.
       soundEngine.playCannonFire();
-      entityManager.spawnProjectile(firingLane, cannonX, cannonCenterY, targetX);
+      entityManager.spawnProjectile(firingLane, cannonX, cannonCenterY, targetX, targetY);
 
       setTimeout(() => {
-        entityManager.spawnExplosionParticles(targetX, targetLaneCenterY, '#4FD1C5', 30);
-        entityManager.spawnFloatingText(`+${points} XP`, targetX, targetLaneCenterY - 26, '#E3BC72');
-        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, targetLaneCenterY - 44, '#64D98B');
+        entityManager.spawnExplosionParticles(targetX, targetY, '#4FD1C5', 30);
+        entityManager.spawnFloatingText(`+${points} XP`, targetX, targetY - 26, '#E3BC72');
+        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, targetY - 44, '#64D98B');
         entityManager.customers = entityManager.customers.filter((c) => c.request.id !== request.id);
       }, 320);
     });
