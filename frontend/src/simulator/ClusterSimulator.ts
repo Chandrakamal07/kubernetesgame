@@ -1,5 +1,14 @@
-import type { ClusterEvent, ClusterState, K8sNode, K8sPod } from './types';
-import { KubeScheduler } from './Scheduler';
+import type {
+  ClusterEvent,
+  ClusterState,
+  K8sNode,
+  K8sPod,
+  PodCondition,
+  ResourceRequirements,
+} from './types.ts';
+import { KubeScheduler } from './Scheduler.ts';
+import { formatCpu, formatMemory, normalizeImage } from './imageUtils.ts';
+import { eventBus } from '../engine/GameEventBus.ts';
 
 export type ClusterListener = (state: ClusterState, latestEvent?: ClusterEvent) => void;
 
@@ -14,6 +23,8 @@ export class ClusterSimulator {
     this.state = {
       clusterName: 'k8s.training.cluster.local',
       namespace: 'chapter1-level1',
+      containerRuntime: 'containerd',
+      podCIDR: '10.244.0.0/16',
       nodes: initialNodes || this.getDefaultNodes(),
       pods: [],
       events: [],
@@ -31,56 +42,106 @@ export class ClusterSimulator {
   public getDefaultNodes(): K8sNode[] {
     return [
       {
-        name: 'worker-1', role: 'worker', status: 'Ready', health: 100,
-        cpuCapacity: 2, memoryCapacity: 4096, cpuAllocatable: 1.8, memoryAllocatable: 3584,
-        cpuAllocated: 0, memoryAllocated: 0, pods: [], laneIndex: 0,
+        name: 'worker-1',
+        role: 'worker',
+        status: 'Ready',
+        health: 100,
+        cpuCapacity: 2.0,
+        memoryCapacity: 4096, // 4Gi in Mi
+        cpuAllocatable: 1.8, // Capacity minus kube-reserved/system-reserved
+        memoryAllocatable: 3584, // 3.5Gi allocatable
+        cpuRequested: 0,
+        memoryRequested: 0,
+        pods: [],
+        laneIndex: 0,
         labels: { 'node-role.kubernetes.io/worker': '', 'topology.kubernetes.io/zone': 'lane-1' },
-        turretAngle: 0, ammoCount: 0,
+        turretAngle: 0,
+        serviceCapacity: 0,
+        conditions: [
+          { type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet is posting ready status' },
+          { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: 'kubelet has sufficient memory available' },
+        ],
       },
       {
-        name: 'worker-2', role: 'worker', status: 'Ready', health: 100,
-        cpuCapacity: 4, memoryCapacity: 8192, cpuAllocatable: 3.6, memoryAllocatable: 7168,
-        cpuAllocated: 0, memoryAllocated: 0, pods: [], laneIndex: 1,
+        name: 'worker-2',
+        role: 'worker',
+        status: 'Ready',
+        health: 100,
+        cpuCapacity: 4.0,
+        memoryCapacity: 8192, // 8Gi in Mi
+        cpuAllocatable: 3.8,
+        memoryAllocatable: 7680, // 7.5Gi allocatable
+        cpuRequested: 0,
+        memoryRequested: 0,
+        pods: [],
+        laneIndex: 1,
         labels: { 'node-role.kubernetes.io/worker': '', 'topology.kubernetes.io/zone': 'lane-2' },
-        turretAngle: 0, ammoCount: 0,
+        turretAngle: 0,
+        serviceCapacity: 0,
+        conditions: [
+          { type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet is posting ready status' },
+          { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: 'kubelet has sufficient memory available' },
+        ],
       },
       {
-        name: 'worker-3', role: 'worker', status: 'Ready', health: 100,
-        cpuCapacity: 2, memoryCapacity: 2048, cpuAllocatable: 1.8, memoryAllocatable: 1792,
-        cpuAllocated: 0, memoryAllocated: 0, pods: [], laneIndex: 2,
+        name: 'worker-3',
+        role: 'worker',
+        status: 'Ready',
+        health: 100,
+        cpuCapacity: 2.0,
+        memoryCapacity: 2048, // 2Gi in Mi
+        cpuAllocatable: 1.8,
+        memoryAllocatable: 1792, // 1.75Gi allocatable
+        cpuRequested: 0,
+        memoryRequested: 0,
+        pods: [],
+        laneIndex: 2,
         labels: { 'node-role.kubernetes.io/worker': '', 'topology.kubernetes.io/zone': 'lane-3' },
-        turretAngle: 0, ammoCount: 0,
+        turretAngle: 0,
+        serviceCapacity: 0,
+        conditions: [
+          { type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet is posting ready status' },
+          { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: 'kubelet has sufficient memory available' },
+        ],
       },
     ];
   }
 
   private addInitialEvents() {
-    for (const node of this.state.nodes) {
-      this.addEvent({
-        type: 'Normal',
-        reason: 'NodeReady',
-        object: `node/${node.name}`,
-        message: `Node ${node.name} status is now: NodeReady`,
-        step: 'KUBELET_OBSERVED',
-        details: `Capacity ${node.cpuCapacity} CPU/${node.memoryCapacity}Mi; Allocatable ${node.cpuAllocatable ?? node.cpuCapacity} CPU/${node.memoryAllocatable ?? node.memoryCapacity}Mi`,
-      });
-    }
+    this.addEvent({
+      type: 'Normal',
+      reason: 'NodeReady',
+      object: 'node/worker-1',
+      message: 'Node worker-1 status is now: NodeReady (Allocatable: 1.8 CPU, 3.5Gi RAM)',
+      step: 'KUBELET_OBSERVED',
+    });
+    this.addEvent({
+      type: 'Normal',
+      reason: 'NodeReady',
+      object: 'node/worker-2',
+      message: 'Node worker-2 status is now: NodeReady (Allocatable: 3.8 CPU, 7.5Gi RAM)',
+      step: 'KUBELET_OBSERVED',
+    });
+    this.addEvent({
+      type: 'Normal',
+      reason: 'NodeReady',
+      object: 'node/worker-3',
+      message: 'Node worker-3 status is now: NodeReady (Allocatable: 1.8 CPU, 1.75Gi RAM)',
+      step: 'KUBELET_OBSERVED',
+    });
   }
 
   public getState(): ClusterState {
-    return {
-      ...this.state,
-      nodes: this.state.nodes.map((node) => ({ ...node, pods: [...node.pods], labels: { ...node.labels } })),
-      pods: this.state.pods.map((pod) => ({ ...pod })),
-      events: [...this.state.events],
-    };
+    return { ...this.state };
   }
 
   public reset(nodes?: K8sNode[], namespace = 'chapter1-level1') {
     this.state = {
       clusterName: 'k8s.training.cluster.local',
       namespace,
-      nodes: (nodes || this.getDefaultNodes()).map((node) => ({ ...node, pods: [...node.pods], labels: { ...node.labels } })),
+      containerRuntime: 'containerd',
+      podCIDR: '10.244.0.0/16',
+      nodes: nodes ? JSON.parse(JSON.stringify(nodes)) : this.getDefaultNodes(),
       pods: [],
       events: [],
       health: 100,
@@ -110,10 +171,12 @@ export class ClusterSimulator {
   public addEvent(event: Omit<ClusterEvent, 'id' | 'timestamp' | 'timeSeconds'>): ClusterEvent {
     const elapsedSeconds = Math.floor((Date.now() - this.startTime) / 1000);
     const date = new Date();
+    const timeStr = date.toTimeString().split(' ')[0];
+
     const fullEvent: ClusterEvent = {
       ...event,
       id: `evt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      timestamp: date.toTimeString().split(' ')[0],
+      timestamp: timeStr,
       timeSeconds: elapsedSeconds,
     };
 
@@ -122,179 +185,277 @@ export class ClusterSimulator {
     return fullEvent;
   }
 
-  /** Create desired Pod state. Command acceptance is deliberately separate from workload readiness. */
+  /**
+   * Submits a pod creation request through the simulated Kubernetes control plane.
+   * Phase 1: API Server accepts and validates object -> returns pod created.
+   * Phase 2: Asynchronously schedules, pulls image, starts container, and reaches Ready status.
+   */
   public createPod(
     name: string,
     image: string,
-    cpuRequest: number = 0.25,
-    memoryRequest: number = 256,
+    resources: ResourceRequirements = { requests: { cpu: 0.25, memory: 256 } }
   ): { success: boolean; message: string; pod?: K8sPod } {
+    // Check if pod already exists in namespace
     if (this.state.pods.some((p) => p.name === name)) {
-      return { success: false, message: `Error from server (AlreadyExists): pods "${name}" already exists` };
+      return {
+        success: false,
+        message: `Error from server (AlreadyExists): pods "${name}" already exists in namespace "${this.state.namespace}"`,
+      };
     }
+
+    const normImage = normalizeImage(image);
+    const cpuReq = resources.requests?.cpu ?? 0.25;
+    const memReq = resources.requests?.memory ?? 256;
+
+    const initialConditions: PodCondition[] = [
+      { type: 'PodScheduled', status: 'False', reason: 'Scheduling', message: 'Waiting for scheduler placement' },
+      { type: 'Initialized', status: 'True' },
+      { type: 'ContainersReady', status: 'False', reason: 'ContainersNotReady', message: 'Containers are not ready yet' },
+      { type: 'Ready', status: 'False', reason: 'ContainersNotReady', message: 'Pod is not ready yet' },
+    ];
 
     const pod: K8sPod = {
       name,
       image,
+      normalizedImage: normImage,
+      phase: 'Pending',
       status: 'Pending',
       ready: false,
+      conditions: initialConditions,
       nodeName: null,
-      cpuRequest,
-      memoryRequest,
+      resources: {
+        requests: { cpu: cpuReq, memory: memReq },
+        limits: resources.limits,
+      },
       age: 0,
       restarts: 0,
       ip: '',
       namespace: this.state.namespace,
       creationTimestamp: Date.now(),
     };
+
     this.state.pods.push(pod);
 
+    // Step 1: kube-apiserver admission, defaulting, and schema validation
     this.addEvent({
       type: 'Normal',
       reason: 'Created',
       object: `pod/${name}`,
-      message: `kube-apiserver accepted pod/${name} (${image}) with CPU:${cpuRequest}c, Mem:${memoryRequest}Mi`,
+      message: `kube-apiserver accepted pod/${name} (${normImage.fullName}) [Requests: CPU=${formatCpu(cpuReq)}, Memory=${formatMemory(memReq)}]`,
       step: 'API_SERVER_VALIDATING',
-      details: 'Request authenticated/authorized, processed by admission, defaulted and validated before persistence.',
+      details: 'API server applied authentication, authorization, admission defaulting, and schema validation.',
     });
+    eventBus.emit('POD_CREATED', { pod });
 
+    // Step 2: Desired state persisted to etcd
     setTimeout(() => {
-      if (!this.state.pods.includes(pod)) return;
       this.addEvent({
         type: 'Normal',
         reason: 'Persisted',
         object: `pod/${name}`,
-        message: `API server persisted desired state for pod/${name} to the cluster state store (etcd).`,
+        message: `Desired cluster state for pod/${name} persisted to etcd store.`,
         step: 'ETCD_PERSISTED',
       });
-      this.schedulePod(pod);
-    }, 200);
+    }, 180);
 
-    return { success: true, message: `pod/${name} created`, pod };
+    // Step 3: Trigger scheduler pipeline
+    setTimeout(() => {
+      this.schedulePod(pod);
+    }, 450);
+
+    return {
+      success: true,
+      message: `pod/${name} created`,
+      pod,
+    };
   }
 
-  private schedulePod(pod: K8sPod) {
-    if (!this.state.pods.includes(pod) || pod.nodeName || pod.status !== 'Pending') return;
+  /**
+   * Evaluates scheduling for a pending pod.
+   */
+  public schedulePod(pod: K8sPod) {
+    if (pod.phase !== 'Pending' || pod.nodeName !== null) return;
 
-    setTimeout(() => {
-      if (!this.state.pods.includes(pod) || pod.nodeName || pod.status !== 'Pending') return;
-      this.addEvent({
-        type: 'Normal',
-        reason: 'Scheduling',
-        object: `pod/${pod.name}`,
-        message: `kube-scheduler evaluating eligible nodes for pod/${pod.name}...`,
-        step: 'SCHEDULER_EVALUATING',
-      });
+    this.addEvent({
+      type: 'Normal',
+      reason: 'Scheduling',
+      object: `pod/${pod.name}`,
+      message: `kube-scheduler evaluating candidate nodes for pod/${pod.name}...`,
+      step: 'SCHEDULER_EVALUATING',
+    });
 
-      const decision = this.scheduler.evaluateNodes(pod, this.state.nodes);
-      if (!decision.selectedNode) {
-        pod.ready = false;
-        this.addEvent({
-          type: 'Warning',
-          reason: 'FailedScheduling',
-          object: `pod/${pod.name}`,
-          message: decision.reason,
-          step: 'SCHEDULER_EVALUATING',
-          details: decision.evaluations.map((e) => `${e.nodeName}: ${e.filterReason || `score ${e.score}`}`).join('; '),
-        });
-        return;
+    const decision = this.scheduler.evaluateNodes(pod, this.state.nodes);
+
+    if (!decision.selectedNode) {
+      pod.phase = 'Pending';
+      pod.status = 'Pending';
+      pod.ready = false;
+
+      const scheduledCond = pod.conditions.find((c) => c.type === 'PodScheduled');
+      if (scheduledCond) {
+        scheduledCond.status = 'False';
+        scheduledCond.reason = 'FailedScheduling';
+        scheduledCond.message = decision.reason;
       }
 
-      const targetNode = this.state.nodes.find((n) => n.name === decision.selectedNode!.name);
-      if (!targetNode) return;
+      this.addEvent({
+        type: 'Warning',
+        reason: 'FailedScheduling',
+        object: `pod/${pod.name}`,
+        message: decision.reason,
+        step: 'SCHEDULER_EVALUATING',
+        details: decision.evaluations.map((e) => `${e.nodeName}: ${e.filterReason || 'Score ' + e.score}`).join('; '),
+      });
+      this.notifyListeners();
+      return;
+    }
 
-      pod.nodeName = targetNode.name;
-      pod.laneIndex = targetNode.laneIndex; // visual location of the selected Node, not a scheduler input
-      targetNode.cpuAllocated += pod.cpuRequest;
-      targetNode.memoryAllocated += pod.memoryRequest;
+    const targetNode = this.state.nodes.find((n) => n.name === decision.selectedNode!.name);
+    if (!targetNode) return;
+
+    // Bind Pod to Node
+    pod.nodeName = targetNode.name;
+    pod.laneIndex = targetNode.laneIndex;
+    pod.scheduledTimestamp = Date.now();
+
+    const reqCpu = pod.resources.requests?.cpu ?? 0.25;
+    const reqMem = pod.resources.requests?.memory ?? 256;
+
+    targetNode.cpuRequested += reqCpu;
+    targetNode.memoryRequested += reqMem;
+    if (!targetNode.pods.includes(pod.name)) {
       targetNode.pods.push(pod.name);
+    }
 
+    const scheduledCond = pod.conditions.find((c) => c.type === 'PodScheduled');
+    if (scheduledCond) {
+      scheduledCond.status = 'True';
+      scheduledCond.reason = 'Scheduled';
+      scheduledCond.message = `Successfully assigned to ${targetNode.name}`;
+    }
+
+    this.addEvent({
+      type: 'Normal',
+      reason: 'Scheduled',
+      object: `pod/${pod.name}`,
+      message: `Successfully assigned ${this.state.namespace}/${pod.name} to ${targetNode.name}`,
+      step: 'SCHEDULER_BOUND',
+      details: `Scheduler scores: ${decision.evaluations.map((e) => `${e.nodeName}: ${e.score}/100`).join(', ')}`,
+    });
+    this.notifyListeners();
+    eventBus.emit('POD_SCHEDULED', { pod, node: targetNode });
+
+    // Step 4: Kubelet observes assignment, sets up sandbox/CNI, and starts container
+    setTimeout(() => {
+      pod.status = 'ContainerCreating';
       this.addEvent({
         type: 'Normal',
-        reason: 'Scheduled',
+        reason: 'Pulling',
         object: `pod/${pod.name}`,
-        message: `Successfully assigned ${this.state.namespace}/${pod.name} to ${targetNode.name}`,
-        step: 'SCHEDULER_BOUND',
-        details: `Training scheduler scores: ${decision.evaluations.map((e) => `${e.nodeName}: ${e.passedFilter ? `${e.score}/100` : e.filterReason}`).join(', ')}`,
+        message: `kubelet on ${targetNode.name} pulling image "${pod.image}" via ${this.state.containerRuntime}`,
+        step: 'RUNTIME_CONTAINER_STARTING',
       });
+      this.notifyListeners();
 
       setTimeout(() => {
-        if (!this.state.pods.includes(pod)) return;
-        pod.status = 'ContainerCreating';
-        pod.ready = false;
+        // Container runtime starts workload
+        pod.phase = 'Running';
+        pod.status = 'Running';
+        pod.startedTimestamp = Date.now();
+        pod.ip = `10.244.${targetNode.laneIndex + 1}.${Math.floor(Math.random() * 200) + 10}`;
+
+        // Readiness probe succeeds
+        pod.ready = true;
+        const containersReadyCond = pod.conditions.find((c) => c.type === 'ContainersReady');
+        if (containersReadyCond) containersReadyCond.status = 'True';
+        const readyCond = pod.conditions.find((c) => c.type === 'Ready');
+        if (readyCond) readyCond.status = 'True';
+
+        // Worker node service capacity active
+        targetNode.serviceCapacity += 1;
+        targetNode.isCharging = true;
+
         this.addEvent({
           type: 'Normal',
-          reason: 'Pulling',
+          reason: 'Started',
           object: `pod/${pod.name}`,
-          message: `kubelet on ${targetNode.name} is preparing the Pod sandbox and pulling image "${pod.image}" through the container runtime`,
-          step: 'CRIO_CONTAINER_STARTING',
+          message: `Container ${pod.name} started successfully. Pod is Running & Ready on ${targetNode.name} (IP: ${pod.ip})`,
+          step: 'POD_READY',
+          details: `Workload ready to serve requests. Defenses charged on ${targetNode.name}.`,
         });
+        this.notifyListeners();
+        eventBus.emit('POD_READY', { pod, node: targetNode });
 
         setTimeout(() => {
-          if (!this.state.pods.includes(pod)) return;
-          pod.status = 'Running';
-          pod.ready = true;
-          pod.ip = `10.244.${targetNode.laneIndex + 1}.${Math.floor(Math.random() * 200) + 10}`;
-          targetNode.ammoCount += 1;
-          targetNode.isCharging = true;
-
-          this.addEvent({
-            type: 'Normal',
-            reason: 'Started',
-            object: `pod/${pod.name}`,
-            message: `Container ${pod.name} started successfully. Pod is Running and Ready on ${targetNode.name}.`,
-            step: 'POD_RUNNING',
-            details: `Workload is Ready on IP ${pod.ip}; the game can now use this healthy workload to serve its matching request.`,
-          });
-
-          setTimeout(() => {
-            targetNode.isCharging = false;
-            this.notifyListeners();
-          }, 600);
-        }, 1200);
-      }, 700);
-    }, 400);
+          if (targetNode) targetNode.isCharging = false;
+          this.notifyListeners();
+        }, 500);
+      }, 1000);
+    }, 600);
   }
 
-  private retryPendingPods() {
-    this.state.pods
-      .filter((pod) => pod.status === 'Pending' && !pod.nodeName)
-      .forEach((pod) => this.schedulePod(pod));
+  /**
+   * Retries scheduling for any pending pods in the cluster queue (e.g. after resources are freed).
+   */
+  public retryPendingPods() {
+    const pendingPods = this.state.pods.filter((p) => p.phase === 'Pending' && p.nodeName === null);
+    for (const pod of pendingPods) {
+      this.schedulePod(pod);
+    }
   }
 
+  /**
+   * Deletes a pod object from the cluster, reclaiming allocated node resources and retrying pending workloads.
+   */
   public deletePod(name: string): { success: boolean; message: string } {
     const index = this.state.pods.findIndex((p) => p.name === name);
     if (index === -1) {
-      return { success: false, message: `Error from server (NotFound): pods "${name}" not found` };
+      return {
+        success: false,
+        message: `Error from server (NotFound): pods "${name}" not found in namespace "${this.state.namespace}"`,
+      };
     }
 
     const pod = this.state.pods[index];
-    pod.status = 'Terminating';
-    pod.ready = false;
-
     if (pod.nodeName) {
       const node = this.state.nodes.find((n) => n.name === pod.nodeName);
       if (node) {
-        node.cpuAllocated = Math.max(0, node.cpuAllocated - pod.cpuRequest);
-        node.memoryAllocated = Math.max(0, node.memoryAllocated - pod.memoryRequest);
+        const reqCpu = pod.resources.requests?.cpu ?? 0.25;
+        const reqMem = pod.resources.requests?.memory ?? 256;
+
+        node.cpuRequested = Math.max(0, node.cpuRequested - reqCpu);
+        node.memoryRequested = Math.max(0, node.memoryRequested - reqMem);
         node.pods = node.pods.filter((pName) => pName !== name);
-        node.ammoCount = Math.max(0, node.ammoCount - 1);
+        node.serviceCapacity = Math.max(0, node.serviceCapacity - 1);
       }
     }
 
     this.state.pods.splice(index, 1);
+
     this.addEvent({
       type: 'Normal',
       reason: 'Killing',
       object: `pod/${name}`,
-      message: `Pod ${name} terminated; its requested resources are now available for future scheduling decisions.`,
+      message: `Stopping container and terminating pod/${name}`,
       step: 'POD_DELETED',
     });
+    this.notifyListeners();
+    eventBus.emit('POD_DELETED', { podName: name });
 
-    this.retryPendingPods();
-    return { success: true, message: `pod "${name}" deleted` };
+    // Trigger retry for any pending pods waiting for resources
+    setTimeout(() => {
+      this.retryPendingPods();
+    }, 200);
+
+    return {
+      success: true,
+      message: `pod "${name}" deleted`,
+    };
   }
 
+  /**
+   * Applies simulated game damage to a node when unhandled customer requests breach SLA.
+   */
   public damageNode(laneIndex: number, amount: number = 20) {
     const node = this.state.nodes.find((n) => n.laneIndex === laneIndex);
     if (!node) return;
@@ -306,41 +467,32 @@ export class ClusterSimulator {
         type: 'Warning',
         reason: 'NodeNotReady',
         object: `node/${node.name}`,
-        message: `Simulation incident: ${node.name} has been forced NotReady after game/SLA health reached zero.`,
-        details: 'Game health is fictional. Kubernetes NodeReady normally reflects kubelet/node health, not customer traffic directly.',
+        message: `ALERT: Node ${node.name} status transitioned to: NotReady (kubelet unresponsive under request flood)`,
       });
     } else {
       this.addEvent({
         type: 'Warning',
-        reason: 'SLABreach',
+        reason: 'NodePressure',
         object: `node/${node.name}`,
-        message: `Unhandled request breached the defense lane. Game health for ${node.name}: ${node.health}%`,
-        details: 'This health value is a game metric and is separate from Kubernetes Node conditions.',
+        message: `Node ${node.name} suffered request pressure. Defense Health: ${node.health}%`,
       });
     }
 
-    const gameNodes = this.state.nodes.filter((n) => n.role === 'worker');
-    this.state.health = Math.round(gameNodes.reduce((acc, n) => acc + n.health, 0) / Math.max(gameNodes.length, 1));
+    const workerNodes = this.state.nodes.filter((n) => n.role === 'worker');
+    const totalHealth = workerNodes.reduce((acc, n) => acc + n.health, 0);
+    this.state.health = Math.round(totalHealth / workerNodes.length);
+
     this.state.slaStreak = 0;
     this.notifyListeners();
-  }
-
-  public consumeAmmo(laneIndex: number): boolean {
-    const node = this.state.nodes.find((n) => n.laneIndex === laneIndex);
-    if (node && node.ammoCount > 0) {
-      node.lastFiredTimestamp = Date.now();
-      // Keep the workload/capacity alive after a visual shot; a Running Pod is not consumable ammunition.
-      this.notifyListeners();
-      return true;
-    }
-    return false;
   }
 
   public updateScore(points: number, isSuccess = true) {
     if (isSuccess) {
       this.state.score += points;
       this.state.slaStreak += 1;
-      this.state.maxSlaStreak = Math.max(this.state.maxSlaStreak, this.state.slaStreak);
+      if (this.state.slaStreak > this.state.maxSlaStreak) {
+        this.state.maxSlaStreak = this.state.slaStreak;
+      }
       this.state.requestsCompleted += 1;
     } else {
       this.state.slaStreak = 0;

@@ -11,8 +11,8 @@ type NodeStatus string
 type PodStatus string
 
 const (
-	RoleWorker NodeRole = "worker"
-	RoleMaster NodeRole = "master"
+	RoleWorker       NodeRole = "worker"
+	RoleControlPlane NodeRole = "control-plane"
 
 	StatusReady    NodeStatus = "Ready"
 	StatusNotReady NodeStatus = "NotReady"
@@ -24,23 +24,26 @@ const (
 )
 
 type K8sNode struct {
-	Name            string     `json:"name"`
-	Role            NodeRole   `json:"role"`
-	Status          NodeStatus `json:"status"`
-	Health          int        `json:"health"`
-	CPUCapacity     float64    `json:"cpuCapacity"`
-	MemoryCapacity  int        `json:"memoryCapacity"` // in Mi
-	CPUAllocated    float64    `json:"cpuAllocated"`
-	MemoryAllocated int        `json:"memoryAllocated"`
-	Pods            []string   `json:"pods"`
-	LaneIndex       int        `json:"laneIndex"`
-	AmmoCount       int        `json:"ammoCount"`
+	Name              string     `json:"name"`
+	Role              NodeRole   `json:"role"`
+	Status            NodeStatus `json:"status"`
+	Health            int        `json:"health"`
+	CPUCapacity       float64    `json:"cpuCapacity"`
+	MemoryCapacity    int        `json:"memoryCapacity"` // in Mi
+	CPUAllocatable    float64    `json:"cpuAllocatable"`
+	MemoryAllocatable int        `json:"memoryAllocatable"`
+	CPURequested      float64    `json:"cpuRequested"`
+	MemoryRequested   int        `json:"memoryRequested"`
+	Pods              []string   `json:"pods"`
+	LaneIndex         int        `json:"laneIndex"`
+	ServiceCapacity   int        `json:"serviceCapacity"`
 }
 
 type K8sPod struct {
 	Name              string    `json:"name"`
 	Image             string    `json:"image"`
 	Status            PodStatus `json:"status"`
+	Ready             bool      `json:"ready"`
 	NodeName          string    `json:"nodeName"`
 	CPURequest        float64   `json:"cpuRequest"`
 	MemoryRequest     int       `json:"memoryRequest"`
@@ -67,6 +70,8 @@ type ClusterEvent struct {
 type ClusterState struct {
 	ClusterName       string         `json:"clusterName"`
 	Namespace         string         `json:"namespace"`
+	ContainerRuntime  string         `json:"containerRuntime"`
+	PodCIDR           string         `json:"podCIDR"`
 	Nodes             []K8sNode      `json:"nodes"`
 	Pods              []K8sPod       `json:"pods"`
 	Events            []ClusterEvent `json:"events"`
@@ -88,15 +93,19 @@ func NewClusterEngine(namespace string) *ClusterEngine {
 	engine := &ClusterEngine{
 		startTime: time.Now(),
 		state: ClusterState{
-			ClusterName:  "ocp4-training.cluster.local",
-			Namespace:    namespace,
-			Nodes:        getDefaultNodes(),
-			Pods:         make([]K8sPod, 0),
-			Events:       make([]ClusterEvent, 0),
-			Health:       100,
-			Score:        0,
-			SLAStreak:    0,
-			MaxSLAStreak: 0,
+			ClusterName:       "k8s.training.cluster.local",
+			Namespace:         namespace,
+			ContainerRuntime:  "containerd",
+			PodCIDR:           "10.244.0.0/16",
+			Nodes:             getDefaultNodes(),
+			Pods:              make([]K8sPod, 0),
+			Events:            make([]ClusterEvent, 0),
+			Health:            100,
+			Score:             0,
+			SLAStreak:         0,
+			MaxSLAStreak:      0,
+			RequestsCompleted: 0,
+			RequestsFailed:    0,
 		},
 	}
 	engine.addInitialEvents()
@@ -106,43 +115,49 @@ func NewClusterEngine(namespace string) *ClusterEngine {
 func getDefaultNodes() []K8sNode {
 	return []K8sNode{
 		{
-			Name:            "worker-1",
-			Role:            RoleWorker,
-			Status:          StatusReady,
-			Health:          100,
-			CPUCapacity:     2.0,
-			MemoryCapacity:  4096,
-			CPUAllocated:    0,
-			MemoryAllocated: 0,
-			Pods:            make([]string, 0),
-			LaneIndex:       0,
-			AmmoCount:       0,
+			Name:              "worker-1",
+			Role:              RoleWorker,
+			Status:            StatusReady,
+			Health:            100,
+			CPUCapacity:       2.0,
+			MemoryCapacity:    4096,
+			CPUAllocatable:    1.8,
+			MemoryAllocatable: 3584,
+			CPURequested:      0,
+			MemoryRequested:   0,
+			Pods:              make([]string, 0),
+			LaneIndex:         0,
+			ServiceCapacity:   0,
 		},
 		{
-			Name:            "worker-2",
-			Role:            RoleWorker,
-			Status:          StatusReady,
-			Health:          100,
-			CPUCapacity:     4.0,
-			MemoryCapacity:  8192,
-			CPUAllocated:    0,
-			MemoryAllocated: 0,
-			Pods:            make([]string, 0),
-			LaneIndex:       1,
-			AmmoCount:       0,
+			Name:              "worker-2",
+			Role:              RoleWorker,
+			Status:            StatusReady,
+			Health:            100,
+			CPUCapacity:       4.0,
+			MemoryCapacity:    8192,
+			CPUAllocatable:    3.8,
+			MemoryAllocatable: 7680,
+			CPURequested:      0,
+			MemoryRequested:   0,
+			Pods:              make([]string, 0),
+			LaneIndex:         1,
+			ServiceCapacity:   0,
 		},
 		{
-			Name:            "worker-3",
-			Role:            RoleWorker,
-			Status:          StatusReady,
-			Health:          100,
-			CPUCapacity:     2.0,
-			MemoryCapacity:  2048,
-			CPUAllocated:    0,
-			MemoryAllocated: 0,
-			Pods:            make([]string, 0),
-			LaneIndex:       2,
-			AmmoCount:       0,
+			Name:              "worker-3",
+			Role:              RoleWorker,
+			Status:            StatusReady,
+			Health:            100,
+			CPUCapacity:       2.0,
+			MemoryCapacity:    2048,
+			CPUAllocatable:    1.8,
+			MemoryAllocatable: 1792,
+			CPURequested:      0,
+			MemoryRequested:   0,
+			Pods:              make([]string, 0),
+			LaneIndex:         2,
+			ServiceCapacity:   0,
 		},
 	}
 }
@@ -152,21 +167,21 @@ func (c *ClusterEngine) addInitialEvents() {
 		Type:    "Normal",
 		Reason:  "NodeReady",
 		Object:  "node/worker-1",
-		Message: "Node worker-1 status is now: NodeReady (2 CPU, 4Gi RAM)",
+		Message: "Node worker-1 status is now: NodeReady (Allocatable: 1.8 CPU, 3.5Gi RAM)",
 		Step:    "KUBELET_OBSERVED",
 	})
 	c.AddEvent(ClusterEvent{
 		Type:    "Normal",
 		Reason:  "NodeReady",
 		Object:  "node/worker-2",
-		Message: "Node worker-2 status is now: NodeReady (4 CPU, 8Gi RAM)",
+		Message: "Node worker-2 status is now: NodeReady (Allocatable: 3.8 CPU, 7.5Gi RAM)",
 		Step:    "KUBELET_OBSERVED",
 	})
 	c.AddEvent(ClusterEvent{
 		Type:    "Normal",
 		Reason:  "NodeReady",
 		Object:  "node/worker-3",
-		Message: "Node worker-3 status is now: NodeReady (2 CPU, 2Gi RAM)",
+		Message: "Node worker-3 status is now: NodeReady (Allocatable: 1.8 CPU, 1.75Gi RAM)",
 		Step:    "KUBELET_OBSERVED",
 	})
 }

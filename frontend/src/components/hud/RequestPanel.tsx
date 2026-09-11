@@ -91,7 +91,21 @@ export const RequestPanel: React.FC = () => {
         {activeRequest.requirements.type === 'describe-node' && (
           <div className="flex items-center justify-between text-[#C6CDDB]">
             <span>Target Node:</span>
-            <span className="text-[#6594FF] font-semibold">{activeRequest.requirements.nodeName}</span>
+            <span className="text-[#6594FF] font-semibold">{activeRequest.requirements.nodeName || 'Any worker node'}</span>
+          </div>
+        )}
+
+        {activeRequest.requirements.type === 'failed-scheduling' && (
+          <div className="flex items-center justify-between text-[#C6CDDB]">
+            <span>Expected Condition:</span>
+            <span className="text-[#F2B95F] font-semibold">FailedScheduling (Insufficient Memory)</span>
+          </div>
+        )}
+
+        {activeRequest.requirements.manifestFile && (
+          <div className="flex items-center justify-between text-[#C6CDDB]">
+            <span>Manifest File:</span>
+            <span className="text-[#6594FF] font-semibold">{activeRequest.requirements.manifestFile}</span>
           </div>
         )}
 
@@ -113,7 +127,7 @@ export const RequestPanel: React.FC = () => {
           <div className="flex items-center justify-between text-[#C6CDDB]">
             <span className="flex items-center gap-1">
               <Cpu size={11} className="text-[#4F7CFF]" />
-              <span>CPU:</span>
+              <span>CPU Request:</span>
             </span>
             <span className="text-[#6594FF] font-semibold">{activeRequest.requirements.minCpu * 1000}m</span>
           </div>
@@ -123,7 +137,7 @@ export const RequestPanel: React.FC = () => {
           <div className="flex items-center justify-between text-[#C6CDDB]">
             <span className="flex items-center gap-1">
               <HardDrive size={11} className="text-[#7765F8]" />
-              <span>Memory:</span>
+              <span>Memory Request:</span>
             </span>
             <span className="text-[#8B78FF] font-semibold">{activeRequest.requirements.minMem}Mi</span>
           </div>

@@ -1,7 +1,7 @@
 export type GameEventType =
   | 'POD_CREATED'
   | 'POD_SCHEDULED'
-  | 'POD_RUNNING'
+  | 'POD_READY'
   | 'POD_DELETED'
   | 'CANNON_FIRED'
   | 'CUSTOMER_SPAWNED'

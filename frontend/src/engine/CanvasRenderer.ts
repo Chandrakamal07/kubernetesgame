@@ -61,7 +61,7 @@ export class CanvasRenderer {
       this.drawWorkloadCapsule(ctx, cap);
     });
 
-    // 7. Draw Projectile Lasers
+    // 7. Draw Projectile Lasers (with cross-lane rotation)
     entities.projectiles.forEach((proj) => {
       this.drawProjectile(ctx, proj);
     });
@@ -125,7 +125,7 @@ export class CanvasRenderer {
       ctx.stroke();
     }
 
-    // Subtle server rack lights on far right
+    // Subtle server rack status LEDs on right side
     ctx.fillStyle = 'rgba(17, 24, 42, 0.3)';
     for (let rx = w - 160; rx < w; rx += 45) {
       ctx.fillRect(rx, 12, 30, h - 24);
@@ -228,7 +228,7 @@ export class CanvasRenderer {
     ctx.fillStyle = '#7F8CA3';
     ctx.font = '8px "JetBrains Mono", monospace';
     ctx.fillText('API-SERVER', 42, coreY + 28);
-    ctx.fillText('ETCD', 42, coreY + 38);
+    ctx.fillText('ETCD / SCHED', 42, coreY + 38);
 
     ctx.restore();
   }
@@ -254,9 +254,13 @@ export class CanvasRenderer {
     ctx.fill();
     ctx.stroke();
 
-    // Turret Barrel (Cannon) pointing right
+    // Turret Barrel with Cross-Lane Aiming Angle
     ctx.save();
-    ctx.translate(x + 28, y);
+    ctx.translate(x + 24, y);
+    if (node.turretAngle) {
+      ctx.rotate(node.turretAngle);
+    }
+
     const timeSinceFire = node.lastFiredTimestamp ? (Date.now() - node.lastFiredTimestamp) / 1000 : 999;
     const recoilOffset = timeSinceFire < 0.18 ? -10 * (1 - timeSinceFire / 0.18) : 0;
 
@@ -270,7 +274,7 @@ export class CanvasRenderer {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(recoilOffset + 22, -8, 6, 16);
 
-    if (isCharging || node.ammoCount > 0) {
+    if (isCharging || node.serviceCapacity > 0) {
       ctx.shadowColor = '#32D5D2';
       ctx.shadowBlur = isCharging ? 16 : 8;
       ctx.fillStyle = '#32D5D2';
@@ -301,7 +305,7 @@ export class CanvasRenderer {
     ctx.textAlign = 'center';
     ctx.fillText(node.name, x - 10, y - 28);
 
-    // Health Bar
+    // Defense Health Bar
     const barW = 82;
     const barH = 4;
     ctx.fillStyle = '#1D283E';
@@ -309,32 +313,32 @@ export class CanvasRenderer {
     ctx.fillStyle = healthFrac > 0.5 ? '#54D98C' : healthFrac > 0.2 ? '#F2B95F' : '#F06D78';
     ctx.fillRect(x - 46, y - 22, barW * healthFrac, barH);
 
-    // Resource Meters: CPU & MEM
-    const cpuFrac = Math.min(1, node.cpuAllocated / node.cpuCapacity);
-    const memFrac = Math.min(1, node.memoryAllocated / node.memoryCapacity);
+    // Resource Meters: CPU & MEM (Allocatable vs Requested)
+    const cpuFrac = Math.min(1, (node.cpuRequested || 0) / node.cpuAllocatable);
+    const memFrac = Math.min(1, (node.memoryRequested || 0) / node.memoryAllocatable);
 
     ctx.fillStyle = '#7F8CA3';
     ctx.font = '8px "JetBrains Mono", monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(`CPU ${node.cpuAllocated.toFixed(1)}/${node.cpuCapacity}c`, x - 46, y + 19);
+    ctx.fillText(`CPU ${(node.cpuRequested || 0).toFixed(1)}/${node.cpuAllocatable}c`, x - 46, y + 19);
     ctx.fillStyle = '#151E33';
     ctx.fillRect(x - 46, y + 22, 82, 3.5);
     ctx.fillStyle = '#4F7CFF';
     ctx.fillRect(x - 46, y + 22, 82 * cpuFrac, 3.5);
 
     ctx.fillStyle = '#7F8CA3';
-    ctx.fillText(`RAM ${node.memoryAllocated}/${node.memoryCapacity}M`, x - 46, y + 34);
+    ctx.fillText(`RAM ${node.memoryRequested || 0}/${node.memoryAllocatable}M`, x - 46, y + 34);
     ctx.fillStyle = '#151E33';
     ctx.fillRect(x - 46, y + 37, 82, 3.5);
     ctx.fillStyle = '#7765F8';
     ctx.fillRect(x - 46, y + 37, 82 * memFrac, 3.5);
 
-    // Ammo Nodes
+    // Continuous Active Service Defenses (Running Pods on node)
     for (let a = 0; a < 3; a++) {
-      const hasAmmo = a < node.ammoCount;
-      ctx.fillStyle = hasAmmo ? '#32D5D2' : 'rgba(127, 140, 163, 0.3)';
-      ctx.shadowColor = hasAmmo ? '#32D5D2' : 'transparent';
-      ctx.shadowBlur = hasAmmo ? 6 : 0;
+      const isOnline = a < node.serviceCapacity;
+      ctx.fillStyle = isOnline ? '#32D5D2' : 'rgba(127, 140, 163, 0.3)';
+      ctx.shadowColor = isOnline ? '#32D5D2' : 'transparent';
+      ctx.shadowBlur = isOnline ? 6 : 0;
       ctx.beginPath();
       ctx.arc(x - 32 + a * 11, y - 5, 3.5, 0, Math.PI * 2);
       ctx.fill();
@@ -385,7 +389,7 @@ export class CanvasRenderer {
     ctx.fillStyle = isUrgent ? '#F06D78' : '#32D5D2';
     ctx.fillRect(pixelX - 9, pixelY - 7, 18, 4.5);
 
-    // Briefcase payload
+    // Request Briefcase
     ctx.fillStyle = '#080B17';
     ctx.strokeStyle = '#7F8CA3';
     ctx.lineWidth = 1;
@@ -415,7 +419,11 @@ export class CanvasRenderer {
         : request.requirements.type === 'inspect-pods-wide'
         ? 'get pods -o wide'
         : request.requirements.type === 'describe-node'
-        ? `desc ${request.requirements.nodeName}`
+        ? 'describe node'
+        : request.requirements.type === 'failed-scheduling'
+        ? 'FailedScheduling'
+        : request.requirements.type === 'delete-pod'
+        ? `del ${request.requirements.podName}`
         : `${request.requirements.podName || 'pod'}`;
     ctx.fillText(reqText, cardX + 5, cardY + 11);
 
@@ -457,6 +465,9 @@ export class CanvasRenderer {
   private drawProjectile(ctx: CanvasRenderingContext2D, proj: ProjectileEntity) {
     ctx.save();
 
+    // Calculate flight angle for cross-lane diagonal firing
+    const angle = Math.atan2(proj.targetY - proj.startY, proj.targetX - proj.startX);
+
     proj.trail.forEach((t) => {
       ctx.globalAlpha = t.alpha * 0.6;
       ctx.fillStyle = proj.color;
@@ -467,16 +478,19 @@ export class CanvasRenderer {
       ctx.fill();
     });
 
+    ctx.translate(proj.currentX, proj.currentY);
+    ctx.rotate(angle);
+
     ctx.globalAlpha = 1.0;
     ctx.fillStyle = '#FFFFFF';
     ctx.shadowColor = proj.color;
     ctx.shadowBlur = 16;
     ctx.beginPath();
-    ctx.arc(proj.currentX, proj.currentY, proj.radius, 0, Math.PI * 2);
+    ctx.arc(0, 0, proj.radius, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = proj.color;
-    ctx.fillRect(proj.currentX - 22, proj.currentY - 2.5, 22, 5);
+    ctx.fillRect(-22, -2.5, 22, 5);
 
     ctx.restore();
   }

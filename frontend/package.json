@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "node --experimental-strip-types src/components/tutorial/tutorialGeometry.test.ts",
+    "test": "node --experimental-strip-types --test src/components/tutorial/tutorialGeometry.test.ts src/simulator/k8sMechanics.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

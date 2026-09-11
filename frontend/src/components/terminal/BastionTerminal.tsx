@@ -62,6 +62,7 @@ export const BastionTerminal: React.FC = () => {
       else if (val === 'kubectl get p' || val === 'kubectl get po' || val === 'oc get p') setInputVal('kubectl get pods');
       else if (val === 'kubectl get pods -' || val === 'oc get pods -') setInputVal('kubectl get pods -o wide');
       else if (val === 'kubectl r' || val === 'kubectl ru' || val === 'oc r') setInputVal('kubectl run web-01 --image=nginx');
+      else if (val === 'kubectl a' || val === 'kubectl ap') setInputVal('kubectl apply -f compute-01.yaml');
       else if (val === 'kubectl d' || val === 'kubectl des' || val === 'oc d') setInputVal('kubectl describe node worker-1');
     }
   };

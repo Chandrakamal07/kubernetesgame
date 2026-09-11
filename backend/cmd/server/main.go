@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/openshift-defense/game/internal/api"
-	"github.com/openshift-defense/game/internal/simulator"
+	"github.com/k8s-defense/game/internal/api"
+	"github.com/k8s-defense/game/internal/simulator"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 	fs := http.FileServer(http.Dir("./frontend/dist"))
 	mux.Handle("/", fs)
 
-	log.Printf("[OpenShift Defense] API Server listening on port :%s (Namespace: %s)", port, namespace)
+	log.Printf("[Kubernetes Defense] API Server listening on port :%s (Namespace: %s)", port, namespace)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

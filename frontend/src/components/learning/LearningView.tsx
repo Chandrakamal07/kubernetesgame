@@ -20,57 +20,57 @@ export const LearningView: React.FC = () => {
   const steps = [
     {
       num: 1,
-      title: 'CLI Submits Manifest',
-      component: 'Bastion Terminal',
+      title: '1. User Expresses Intent',
+      component: 'Bastion Terminal (kubectl)',
       icon: <Terminal size={14} className="text-[#4F7CFF]" />,
-      desc: 'Player runs kubectl command; client-side OpenAPI schemas validate structure.',
+      desc: 'Player runs kubectl command or applies YAML. Client constructs request to API server.',
       active: true,
       completed: !!latestPod,
     },
     {
       num: 2,
-      title: 'API Server Admission',
+      title: '2. Authentication & Admission',
       component: 'kube-apiserver',
       icon: <Server size={14} className="text-[#6594FF]" />,
-      desc: 'Authenticates request, authorizes RBAC permissions, and validates pod spec.',
+      desc: 'API server authenticates, authorizes, applies admission defaulting and validates schema.',
       active: !!latestPod,
       completed: !!latestPod?.nodeName || latestPod?.status === 'Running',
     },
     {
       num: 3,
-      title: 'Cluster State Persisted',
+      title: '3. Desired State Persisted',
       component: 'etcd Key-Value Store',
       icon: <Database size={14} className="text-[#7765F8]" />,
-      desc: `Pod object created in Pending state under /registry/pods/${cluster.namespace}/...`,
+      desc: 'API server persists the Pod object in desired cluster state backed by etcd.',
       active: !!latestPod,
       completed: !!latestPod?.nodeName || latestPod?.status === 'Running',
     },
     {
       num: 4,
-      title: 'Scheduler Filtering & Scoring',
+      title: '4. Filter & Score Placement',
       component: 'kube-scheduler',
       icon: <Cpu size={14} className="text-[#54D98C]" />,
-      desc: 'Evaluates candidate worker nodes based on free CPU/RAM and scores optimal placement.',
+      desc: 'Watches for unscheduled Pods, filters candidate Nodes by Allocatable capacity, and scores placement.',
       active: !!latestPod?.nodeName || latestPod?.status === 'Pending',
       completed: latestPod?.status === 'ContainerCreating' || latestPod?.status === 'Running',
     },
     {
       num: 5,
-      title: 'Kubelet Binding & Startup',
-      component: 'kubelet + Container Runtime',
+      title: '5. Kubelet & Container Runtime',
+      component: `kubelet + ${cluster.containerRuntime}`,
       icon: <Box size={14} className="text-[#F2B95F]" />,
-      desc: `Kubelet on ${latestPod?.nodeName || 'worker node'} pulls container image and configures cgroups.`,
+      desc: `Kubelet on ${latestPod?.nodeName || 'worker node'} sets up sandbox/network and pulls image via ${cluster.containerRuntime}.`,
       active: latestPod?.status === 'ContainerCreating' || latestPod?.status === 'Running',
       completed: latestPod?.status === 'Running',
     },
     {
       num: 6,
-      title: 'Workload Running (Ammo Ready)',
-      component: 'Container Network (CNI)',
+      title: '6. Running & Ready Status',
+      component: 'Workload Ready (Pod IP Assigned)',
       icon: <CheckCircle2 size={14} className="text-[#54D98C]" />,
-      desc: 'Pod reaches Running state with allocated IP. Defense cannon loads plasma ammunition!',
-      active: latestPod?.status === 'Running',
-      completed: latestPod?.status === 'Running',
+      desc: 'Container starts, readiness succeeds, and the Pod becomes Ready to serve traffic.',
+      active: latestPod?.status === 'Running' && latestPod?.ready,
+      completed: latestPod?.status === 'Running' && latestPod?.ready,
     },
   ];
 
@@ -91,7 +91,7 @@ export const LearningView: React.FC = () => {
       </div>
 
       <p className="text-[11px] text-[#7F8CA3] mt-2 leading-relaxed font-sans">
-        Observe how Kubernetes processes your terminal commands internally:
+        Observe how Kubernetes processes your requests asynchronously through the control plane:
       </p>
 
       {/* Step Pipeline List */}
@@ -139,10 +139,10 @@ export const LearningView: React.FC = () => {
       {/* Architectural Insight Callout */}
       <div className="mt-4 pt-3 border-t border-[rgba(132,156,205,0.12)]">
         <div className="text-[9px] font-mono uppercase tracking-wider text-[#7F8CA3] font-bold mb-1.5">
-          Architectural Insight
+          Kubernetes Architectural Rule
         </div>
         <p className="text-[11px] text-[#C6CDDB] bg-[#080B17] p-2.5 rounded-xl border border-[rgba(132,156,205,0.12)] font-sans leading-relaxed">
-          The player initiates workloads via <code className="text-[#6594FF] font-mono">kubectl</code>, but the <strong className="text-[#F7F9FF]">kube-scheduler</strong> makes node placement decisions based on CPU & Memory capacity.
+          A successful <code className="text-[#6594FF] font-mono">kubectl</code> command creates the API object in etcd, but workloads only serve traffic once <strong className="text-[#F7F9FF]">Running & Ready</strong>.
         </p>
       </div>
     </div>

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/openshift-defense/game/internal/simulator"
+	"github.com/k8s-defense/game/internal/simulator"
 )
 
 type APIHandler struct {
@@ -22,8 +22,8 @@ func (h *APIHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "healthy",
-		"service": "openshift-defense-api",
-		"version": "v1.0",
+		"service": "k8s-defense-api",
+		"version": "v1.30.0",
 	})
 }
 

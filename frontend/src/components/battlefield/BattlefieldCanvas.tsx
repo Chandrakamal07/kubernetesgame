@@ -8,17 +8,21 @@ import { soundEngine } from '../../engine/AudioEngine';
 export const BattlefieldCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { cluster, activeRequest, isPaused, actions } = useGameStore();
+
   const entityManagerRef = useRef<EntityManager>(new EntityManager());
   const rendererRef = useRef<CanvasRenderer | null>(null);
   const lastTimeRef = useRef<number>(0);
   const activeRequestRef = useRef(activeRequest);
 
-  useEffect(() => { activeRequestRef.current = activeRequest; }, [activeRequest]);
+  useEffect(() => {
+    activeRequestRef.current = activeRequest;
+  }, [activeRequest]);
 
   useEffect(() => {
     lastTimeRef.current = performance.now();
     const canvas = canvasRef.current;
     if (!canvas) return;
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -30,41 +34,58 @@ export const BattlefieldCanvas: React.FC = () => {
       const dpr = window.devicePixelRatio || 1;
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.scale(dpr, dpr);
       renderer.setDimensions(rect.width, rect.height);
     };
 
     resize();
     window.addEventListener('resize', resize);
+
     const entityManager = entityManagerRef.current;
 
     const unsubscribeSpawn = eventBus.on('CUSTOMER_SPAWNED', (req) => {
       const rect = canvas.getBoundingClientRect();
       const laneHeight = rect.height / 3;
-      entityManager.spawnCustomer(req, rect.width, (req.lane + 0.5) * laneHeight);
+      const centerY = (req.lane + 0.5) * laneHeight;
+      entityManager.spawnCustomer(req, rect.width, centerY);
     });
 
-    const unsubscribeSatisfied = eventBus.on('OBJECTIVE_SATISFIED', ({ request, points, nodeLane }) => {
+    const unsubscribeSatisfied = eventBus.on('OBJECTIVE_SATISFIED', ({ request, points, fulfillingNode }) => {
       const rect = canvas.getBoundingClientRect();
       const laneHeight = rect.height / 3;
-      const targetLaneCenterY = (request.lane + 0.5) * laneHeight;
-      const firingLane = typeof nodeLane === 'number' ? nodeLane : request.lane;
-      const cannonCenterY = (firingLane + 0.5) * laneHeight;
-      const cannonX = 210;
+
+      // Authentic Kubernetes Firing: Originates strictly from fulfillingNode platform hosting the Pod
+      const originLane = fulfillingNode ? fulfillingNode.laneIndex : request.lane;
+      const targetLane = request.lane;
+
+      const originCenterY = (originLane + 0.5) * laneHeight;
+      const targetCenterY = (targetLane + 0.5) * laneHeight;
+      const cannonX = 200;
+
       const targetCustomer = entityManager.customers.find((c) => c.request.id === request.id);
       const targetX = targetCustomer ? targetCustomer.pixelX : rect.width - 100;
 
-      // Game lanes never dictate Kubernetes scheduling. The visual shot originates
-      // from the node actually selected by the scheduler, even across lanes.
+      // Aim fulfilling node cannon barrel diagonally toward target
+      const hostNode = cluster.nodes.find((n) => n.laneIndex === originLane);
+      if (hostNode) {
+        hostNode.turretAngle = Math.atan2(targetCenterY - originCenterY, targetX - cannonX);
+        hostNode.lastFiredTimestamp = Date.now();
+      }
+
       soundEngine.playCannonFire();
-      entityManager.spawnProjectile(firingLane, cannonX, cannonCenterY, targetX);
+      entityManager.spawnProjectile(originLane, targetLane, cannonX, originCenterY, targetX, targetCenterY);
 
       setTimeout(() => {
-        entityManager.spawnExplosionParticles(targetX, targetLaneCenterY, '#4FD1C5', 30);
-        entityManager.spawnFloatingText(`+${points} XP`, targetX, targetLaneCenterY - 26, '#E3BC72');
-        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, targetLaneCenterY - 44, '#64D98B');
+        entityManager.spawnExplosionParticles(targetX, targetCenterY, '#4FD1C5', 30);
+        entityManager.spawnFloatingText(`+${points} XP`, targetX, targetCenterY - 26, '#E3BC72');
+        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, targetCenterY - 44, '#64D98B');
+
         entityManager.customers = entityManager.customers.filter((c) => c.request.id !== request.id);
-      }, 320);
+
+        setTimeout(() => {
+          if (hostNode) hostNode.turretAngle = 0;
+        }, 400);
+      }, 340);
     });
 
     let animId: number;
@@ -74,6 +95,7 @@ export const BattlefieldCanvas: React.FC = () => {
 
       if (!isPaused) {
         entityManager.update(dt, 160);
+
         entityManager.customers.forEach((cust) => {
           if (cust.status === 'reached_node') {
             entityManager.spawnExplosionParticles(cust.pixelX, cust.pixelY, '#E56A72', 25);
@@ -86,10 +108,12 @@ export const BattlefieldCanvas: React.FC = () => {
       }
 
       renderer.render(dt, cluster.nodes, entityManager, activeRequestRef.current?.lane ?? null, isPaused);
+
       animId = requestAnimationFrame(loop);
     };
 
     animId = requestAnimationFrame(loop);
+
     return () => {
       cancelAnimationFrame(animId);
       window.removeEventListener('resize', resize);
