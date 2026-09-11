@@ -8,21 +8,17 @@ import { soundEngine } from '../../engine/AudioEngine';
 export const BattlefieldCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { cluster, activeRequest, isPaused, actions } = useGameStore();
-
   const entityManagerRef = useRef<EntityManager>(new EntityManager());
   const rendererRef = useRef<CanvasRenderer | null>(null);
   const lastTimeRef = useRef<number>(0);
   const activeRequestRef = useRef(activeRequest);
 
-  useEffect(() => {
-    activeRequestRef.current = activeRequest;
-  }, [activeRequest]);
+  useEffect(() => { activeRequestRef.current = activeRequest; }, [activeRequest]);
 
   useEffect(() => {
     lastTimeRef.current = performance.now();
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -34,39 +30,39 @@ export const BattlefieldCanvas: React.FC = () => {
       const dpr = window.devicePixelRatio || 1;
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       renderer.setDimensions(rect.width, rect.height);
     };
 
     resize();
     window.addEventListener('resize', resize);
-
     const entityManager = entityManagerRef.current;
 
     const unsubscribeSpawn = eventBus.on('CUSTOMER_SPAWNED', (req) => {
       const rect = canvas.getBoundingClientRect();
       const laneHeight = rect.height / 3;
-      const centerY = (req.lane + 0.5) * laneHeight;
-      entityManager.spawnCustomer(req, rect.width, centerY);
+      entityManager.spawnCustomer(req, rect.width, (req.lane + 0.5) * laneHeight);
     });
 
-    const unsubscribeSatisfied = eventBus.on('OBJECTIVE_SATISFIED', ({ request, points }) => {
+    const unsubscribeSatisfied = eventBus.on('OBJECTIVE_SATISFIED', ({ request, points, nodeLane }) => {
       const rect = canvas.getBoundingClientRect();
       const laneHeight = rect.height / 3;
-      const laneCenterY = (request.lane + 0.5) * laneHeight;
+      const targetLaneCenterY = (request.lane + 0.5) * laneHeight;
+      const firingLane = typeof nodeLane === 'number' ? nodeLane : request.lane;
+      const cannonCenterY = (firingLane + 0.5) * laneHeight;
       const cannonX = 210;
-
       const targetCustomer = entityManager.customers.find((c) => c.request.id === request.id);
       const targetX = targetCustomer ? targetCustomer.pixelX : rect.width - 100;
 
+      // Game lanes never dictate Kubernetes scheduling. The visual shot originates
+      // from the node actually selected by the scheduler, even across lanes.
       soundEngine.playCannonFire();
-      entityManager.spawnProjectile(request.lane, cannonX, laneCenterY, targetX);
+      entityManager.spawnProjectile(firingLane, cannonX, cannonCenterY, targetX);
 
       setTimeout(() => {
-        entityManager.spawnExplosionParticles(targetX, laneCenterY, '#4FD1C5', 30);
-        entityManager.spawnFloatingText(`+${points} XP`, targetX, laneCenterY - 26, '#E3BC72');
-        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, laneCenterY - 44, '#64D98B');
-
+        entityManager.spawnExplosionParticles(targetX, targetLaneCenterY, '#4FD1C5', 30);
+        entityManager.spawnFloatingText(`+${points} XP`, targetX, targetLaneCenterY - 26, '#E3BC72');
+        entityManager.spawnFloatingText('REQUEST SERVED!', targetX, targetLaneCenterY - 44, '#64D98B');
         entityManager.customers = entityManager.customers.filter((c) => c.request.id !== request.id);
       }, 320);
     });
@@ -78,7 +74,6 @@ export const BattlefieldCanvas: React.FC = () => {
 
       if (!isPaused) {
         entityManager.update(dt, 160);
-
         entityManager.customers.forEach((cust) => {
           if (cust.status === 'reached_node') {
             entityManager.spawnExplosionParticles(cust.pixelX, cust.pixelY, '#E56A72', 25);
@@ -91,12 +86,10 @@ export const BattlefieldCanvas: React.FC = () => {
       }
 
       renderer.render(dt, cluster.nodes, entityManager, activeRequestRef.current?.lane ?? null, isPaused);
-
       animId = requestAnimationFrame(loop);
     };
 
     animId = requestAnimationFrame(loop);
-
     return () => {
       cancelAnimationFrame(animId);
       window.removeEventListener('resize', resize);
