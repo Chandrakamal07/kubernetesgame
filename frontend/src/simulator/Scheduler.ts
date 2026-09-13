@@ -29,7 +29,7 @@ export class KubeScheduler {
     return podTolerations.some((tol) => {
       // Exists operator matches any key/value if key matches, or matches all if key is empty
       if (tol.operator === 'Exists') {
-        if (!tol.key) return true; // matches everything
+        if (!tol.key) return true;
         return tol.key === taint.key && (!tol.effect || tol.effect === taint.effect);
       }
 
@@ -51,8 +51,9 @@ export class KubeScheduler {
     const evaluations: NodeEvaluation[] = [];
     const eligibleNodes: { node: K8sNode; score: number }[] = [];
 
-    const reqCpu = pod.resources.requests?.cpu ?? 0.25;
-    const reqMem = pod.resources.requests?.memory ?? 256;
+    // Upstream Kubernetes rule: If no explicit request is set, requested amount is 0
+    const reqCpu = pod.resources.requests?.cpu ?? 0;
+    const reqMem = pod.resources.requests?.memory ?? 0;
 
     for (const node of nodes) {
       // Filter 1: Node Ready Check
@@ -79,7 +80,7 @@ export class KubeScheduler {
         continue;
       }
 
-      // Filter 3: Taints & Tolerations
+      // Filter 3: Taints & Tolerations (e.g. control-plane NoSchedule)
       if (node.taints && node.taints.length > 0) {
         const untoleratedTaint = node.taints.find(
           (t) => (t.effect === 'NoSchedule' || t.effect === 'NoExecute') && !this.toleratesTaint(pod.tolerations, t)
@@ -98,13 +99,13 @@ export class KubeScheduler {
       }
 
       // Filter 4: Node Allocatable Resources Fit
-      // Scheduling compares against Node Allocatable, NOT raw Capacity.
+      // Scheduling strictly compares against Node Allocatable, NOT raw Capacity.
       const freeCpu = node.cpuAllocatable - node.cpuRequested;
-      if (freeCpu < reqCpu) {
+      if (reqCpu > 0 && freeCpu < reqCpu) {
         evaluations.push({
           nodeName: node.name,
           passedFilter: false,
-          filterReason: `Insufficient CPU: requested ${formatCpu(reqCpu)}, available allocatable ${formatCpu(Math.max(0, freeCpu))}`,
+          filterReason: `Insufficient cpu: requested ${formatCpu(reqCpu)}, available allocatable ${formatCpu(Math.max(0, freeCpu))}`,
           score: 0,
           scoreBreakdown: { cpuScore: 0, memoryScore: 0, totalScore: 0 },
         });
@@ -112,11 +113,11 @@ export class KubeScheduler {
       }
 
       const freeMem = node.memoryAllocatable - node.memoryRequested;
-      if (freeMem < reqMem) {
+      if (reqMem > 0 && freeMem < reqMem) {
         evaluations.push({
           nodeName: node.name,
           passedFilter: false,
-          filterReason: `Insufficient Memory: requested ${formatMemory(reqMem)}, available allocatable ${formatMemory(Math.max(0, freeMem))}`,
+          filterReason: `Insufficient memory: requested ${formatMemory(reqMem)}, available allocatable ${formatMemory(Math.max(0, freeMem))}`,
           score: 0,
           scoreBreakdown: { cpuScore: 0, memoryScore: 0, totalScore: 0 },
         });
@@ -124,9 +125,9 @@ export class KubeScheduler {
       }
 
       // Scoring Stage: Simplified NodeResourcesFit / LeastAllocated Priority
-      // Higher score awarded to nodes where the placement leaves a balanced, healthy ratio of remaining allocatable capacity.
-      const cpuFreeRatio = Math.max(0, (freeCpu - reqCpu) / node.cpuAllocatable);
-      const memFreeRatio = Math.max(0, (freeMem - reqMem) / node.memoryAllocatable);
+      // Award higher score to nodes with more remaining allocatable headroom.
+      const cpuFreeRatio = Math.max(0, (freeCpu - reqCpu) / Math.max(0.1, node.cpuAllocatable));
+      const memFreeRatio = Math.max(0, (freeMem - reqMem) / Math.max(1, node.memoryAllocatable));
 
       const cpuScore = Math.round(cpuFreeRatio * 50);
       const memoryScore = Math.round(memFreeRatio * 50);
@@ -143,7 +144,7 @@ export class KubeScheduler {
     }
 
     if (eligibleNodes.length === 0) {
-      const reasons = evaluations.map((e) => `${e.nodeName}: ${e.filterReason || 'OK'}`).join(', ');
+      const reasons = evaluations.map((e) => `${e.nodeName}: ${e.filterReason || 'OK'}`).join('; ');
       return {
         selectedNode: null,
         evaluations,

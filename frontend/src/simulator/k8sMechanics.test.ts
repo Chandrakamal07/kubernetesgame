@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { ClusterSimulator } from './ClusterSimulator.ts';
 import { CommandParser } from './CommandParser.ts';
 import { KubeScheduler } from './Scheduler.ts';
+import { SimulationClock } from './SimulationClock.ts';
 import { matchesRequiredImage, normalizeImage, parseCpuQuantity, parseMemoryQuantity } from './imageUtils.ts';
 import type { K8sNode, K8sPod } from './types.ts';
 
-describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
+describe('Kubernetes Mechanics & Deterministic Rules Audit Test Suite', () => {
   it('Rule 1: Pod creation returns success immediately, but Pod is Pending and not Ready', () => {
-    const sim = new ClusterSimulator();
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const result = sim.createPod('web-01', 'nginx');
 
     assert.equal(result.success, true);
@@ -18,23 +20,22 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     const pod = state.pods.find((p) => p.name === 'web-01');
     assert.ok(pod);
     assert.equal(pod.phase, 'Pending');
-    assert.equal(pod.status, 'Pending');
     assert.equal(pod.ready, false);
     assert.equal(pod.nodeName, null);
   });
 
-  it('Rule 2: Scheduling & runtime startup transitions Pod to Running & Ready', async () => {
-    const sim = new ClusterSimulator();
+  it('Rule 2: Scheduling & runtime startup transitions Pod to Running & Ready via virtual clock', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     sim.createPod('web-01', 'nginx');
 
-    // Wait for asynchronous control plane simulation (scheduling + container runtime startup)
-    await new Promise((resolve) => setTimeout(resolve, 2400));
+    // Advance clock past API (180ms) -> Scheduler (450ms) -> Kubelet (750ms) -> Container Ready (1150ms)
+    clock.advance(1500);
 
     const state = sim.getState();
     const pod = state.pods.find((p) => p.name === 'web-01');
     assert.ok(pod);
     assert.equal(pod.phase, 'Running');
-    assert.equal(pod.status, 'Running');
     assert.equal(pod.ready, true);
     assert.ok(pod.nodeName !== null);
     assert.ok(pod.ip.startsWith('10.244.'));
@@ -46,8 +47,9 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(readyCond?.status, 'True');
   });
 
-  it('Rule 3: Pod exceeding Node Allocatable memory remains Pending with FailedScheduling event', async () => {
-    const sim = new ClusterSimulator();
+  it('Rule 3: Pod exceeding Node Allocatable memory remains Pending with FailedScheduling event', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     // Request 16Gi (16384Mi), which exceeds all node allocatable capacities (max is worker-2 with 7680Mi)
     const result = sim.createPod('big-cache', 'redis', {
       requests: { cpu: 0.5, memory: 16384 },
@@ -55,13 +57,12 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
 
     assert.equal(result.success, true);
 
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    clock.advance(600);
 
     const state = sim.getState();
     const pod = state.pods.find((p) => p.name === 'big-cache');
     assert.ok(pod);
     assert.equal(pod.phase, 'Pending');
-    assert.equal(pod.status, 'Pending');
     assert.equal(pod.ready, false);
     assert.equal(pod.nodeName, null);
 
@@ -72,22 +73,23 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.ok(failedSchedEvent, 'FailedScheduling warning event must be generated');
   });
 
-  it('Rule 4: Deleting workload reclaims requested resources and triggers retry queue for Pending pod', async () => {
-    const sim = new ClusterSimulator();
+  it('Rule 4: Deleting workload reclaims requested resources and triggers retry queue for Pending pod', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
 
-    // worker-3 has 1792Mi allocatable. Create pod consuming 1500Mi on worker-3 by cordoning worker-1 and worker-2
+    // worker-3 has 1792Mi allocatable. Cordon worker-1 and worker-2
     const nodes = sim.getDefaultNodes();
     nodes[0].unschedulable = true;
     nodes[1].unschedulable = true;
     sim.reset(nodes);
 
-    // 1. Create first pod that fits
+    // 1. Create first pod that fits on worker-3
     sim.createPod('pod-a', 'nginx', { requests: { cpu: 0.5, memory: 1200 } });
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    clock.advance(500);
 
     // 2. Create second pod that does NOT fit on worker-3 (needs 1000Mi, only 592Mi remaining)
     sim.createPod('pod-b', 'nginx', { requests: { cpu: 0.5, memory: 1000 } });
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    clock.advance(500);
 
     let state = sim.getState();
     let podB = state.pods.find((p) => p.name === 'pod-b');
@@ -98,8 +100,8 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     const delResult = sim.deletePod('pod-a');
     assert.equal(delResult.success, true);
 
-    // Wait for retry queue execution
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    // Advance clock to trigger retry queue
+    clock.advance(500);
 
     state = sim.getState();
     podB = state.pods.find((p) => p.name === 'pod-b');
@@ -107,7 +109,8 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
   });
 
   it('Rule 5: Flag Parser differentiates -o wide from -o json and -o yaml', () => {
-    const sim = new ClusterSimulator();
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const parser = new CommandParser(sim);
 
     sim.createPod('web-01', 'nginx');
@@ -122,15 +125,20 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(jsonResult.success, true);
     assert.equal(jsonResult.commandType, 'get_pods_json');
     assert.ok(jsonResult.output.includes('"kind": "PodList"'));
-    assert.notEqual(jsonResult.commandType, 'get_pods_wide', '-o json must NOT be classified as get_pods_wide');
 
     const yamlResult = parser.execute('kubectl get nodes -o yaml');
     assert.equal(yamlResult.success, true);
     assert.equal(yamlResult.commandType, 'get_nodes_yaml');
+
+    const nameResult = parser.execute('kubectl get pods -o name');
+    assert.equal(nameResult.success, true);
+    assert.equal(nameResult.commandType, 'get_pods_name');
+    assert.ok(nameResult.output.includes('pod/web-01'));
   });
 
   it('Rule 6: Declarative apply (kubectl apply -f compute-01.yaml) creates workload with correct resource requests', () => {
-    const sim = new ClusterSimulator();
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const parser = new CommandParser(sim);
 
     const applyResult = parser.execute('kubectl apply -f compute-01.yaml');
@@ -145,13 +153,35 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(pod.resources.requests?.cpu, 0.5);
   });
 
-  it('Rule 7: kubectl describe node calculates actual allocated pods and accurate Allocatable percentages', async () => {
-    const sim = new ClusterSimulator();
+  it('Rule 7: kubectl apply vs kubectl create semantics', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
+    const parser = new CommandParser(sim);
+
+    // 1. Initial create
+    const createResult = parser.execute('kubectl create -f compute-01.yaml');
+    assert.equal(createResult.success, true);
+
+    // 2. Repeated create fails with AlreadyExists
+    const createRepeat = parser.execute('kubectl create -f compute-01.yaml');
+    assert.equal(createRepeat.success, false);
+    assert.ok(createRepeat.output.includes('AlreadyExists'));
+
+    // 3. Repeated apply on existing unchanged object returns unchanged
+    const applyRepeat = parser.execute('kubectl apply -f compute-01.yaml');
+    assert.equal(applyRepeat.success, true);
+    assert.equal(applyRepeat.commandType, 'apply_unchanged');
+    assert.ok(applyRepeat.output.includes('unchanged'));
+  });
+
+  it('Rule 8: kubectl describe node calculates actual allocated pods and accurate Allocatable percentages', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const parser = new CommandParser(sim);
 
     // Place a pod requesting 500m CPU (0.5 cores) and 1024Mi RAM
     sim.createPod('web-heavy', 'nginx', { requests: { cpu: 0.5, memory: 1024 } });
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    clock.advance(500);
 
     const state = sim.getState();
     const pod = state.pods.find((p) => p.name === 'web-heavy');
@@ -165,8 +195,9 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.ok(descResult.output.includes('1024Mi'));
   });
 
-  it('Rule 8: kubectl describe pod for Pending Pod does NOT display Started or Pulled events', () => {
-    const sim = new ClusterSimulator();
+  it('Rule 9: kubectl describe pod for Pending Pod does NOT display Started or Pulled events', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const parser = new CommandParser(sim);
 
     sim.createPod('pending-app', 'nginx');
@@ -174,18 +205,19 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     const descResult = parser.execute('kubectl describe pod pending-app');
     assert.equal(descResult.success, true);
     assert.ok(descResult.output.includes('Status:       Pending'));
+    assert.ok(descResult.output.includes('State:          Waiting (ContainerCreating)'));
     assert.ok(!descResult.output.includes('Started container'), 'Pending pod must not have Started container event');
   });
 
-  it('Rule 9: Scheduler filters out Control-Plane Node with NoSchedule taint for regular Pods without toleration', () => {
+  it('Rule 10: Scheduler filters out Control-Plane Node with NoSchedule taint for regular Pods without toleration', () => {
     const scheduler = new KubeScheduler();
 
     const nodes: K8sNode[] = [
       {
+        uid: 'node-cp',
         name: 'control-plane',
         role: 'control-plane',
         status: 'Ready',
-        health: 100,
         cpuCapacity: 2.0,
         memoryCapacity: 4096,
         cpuAllocatable: 1.8,
@@ -193,17 +225,15 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
         cpuRequested: 0,
         memoryRequested: 0,
         pods: [],
-        laneIndex: 0,
         labels: { 'node-role.kubernetes.io/control-plane': '' },
-        turretAngle: 0,
-        serviceCapacity: 0,
+        conditions: [],
         taints: [{ key: 'node-role.kubernetes.io/control-plane', effect: 'NoSchedule' }],
       },
       {
+        uid: 'node-w1',
         name: 'worker-1',
         role: 'worker',
         status: 'Ready',
-        health: 100,
         cpuCapacity: 2.0,
         memoryCapacity: 4096,
         cpuAllocatable: 1.8,
@@ -211,19 +241,18 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
         cpuRequested: 0,
         memoryRequested: 0,
         pods: [],
-        laneIndex: 0,
         labels: { 'node-role.kubernetes.io/worker': '' },
-        turretAngle: 0,
-        serviceCapacity: 0,
+        conditions: [],
       },
     ];
 
     const regularPod: K8sPod = {
+      uid: 'pod-1',
       name: 'app-01',
       image: 'nginx',
       normalizedImage: normalizeImage('nginx'),
       phase: 'Pending',
-      status: 'Pending',
+      containerState: 'Waiting',
       ready: false,
       conditions: [],
       nodeName: null,
@@ -250,7 +279,7 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(decision2.selectedNode?.name, 'control-plane', 'Pod with toleration should be eligible for tainted control-plane node');
   });
 
-  it('Rule 10: Canonical image matching correctly normalizes repository and tag', () => {
+  it('Rule 11: Canonical image matching correctly normalizes repository and tag', () => {
     assert.equal(matchesRequiredImage('nginx', 'nginx'), true);
     assert.equal(matchesRequiredImage('nginx:latest', 'nginx'), true);
     assert.equal(matchesRequiredImage('docker.io/library/nginx:latest', 'nginx'), true);
@@ -261,21 +290,21 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(matchesRequiredImage('nginx-ingress-controller', 'nginx'), false);
   });
 
-  it('Rule 11: Bare Pod deletion does NOT self-heal', async () => {
-    const sim = new ClusterSimulator();
+  it('Rule 12: Bare Pod deletion does NOT self-heal', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     sim.createPod('bare-pod', 'nginx');
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    clock.advance(500);
 
     assert.equal(sim.getState().pods.length, 1);
     sim.deletePod('bare-pod');
     assert.equal(sim.getState().pods.length, 0);
 
-    // Wait and verify it is not recreated
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    clock.advance(2000);
     assert.equal(sim.getState().pods.length, 0, 'Bare Pods must not be automatically recreated upon deletion');
   });
 
-  it('Rule 12: Resource quantity parsers handle millicores and Gi/Mi properly', () => {
+  it('Rule 13: Resource quantity parsers handle millicores and Gi/Mi properly', () => {
     assert.equal(parseCpuQuantity('500m'), 0.5);
     assert.equal(parseCpuQuantity('250m'), 0.25);
     assert.equal(parseCpuQuantity('1'), 1.0);
@@ -287,177 +316,73 @@ describe('Kubernetes Mechanics & Rules Audit Test Suite', () => {
     assert.equal(parseMemoryQuantity('256Mi'), 256);
   });
 
-  it('Rule 13: Full Sequential Campaign Progression (Chapter 1 Level 1, Requests 1A through 1F)', async () => {
-    const sim = new ClusterSimulator();
+  it('Rule 14: Full Sequential Campaign Progression (Lessons 1 through 8)', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const parser = new CommandParser(sim);
 
-    // Req 1: kubectl get nodes
+    // Lesson 1: kubectl get nodes
     const r1 = parser.execute('kubectl get nodes');
     assert.equal(r1.success, true);
     assert.equal(r1.commandType, 'get_nodes');
 
-    // Req 2: kubectl run web-01 --image=nginx
+    // Lesson 3: kubectl run web-01 --image=nginx
     const r2 = parser.execute('kubectl run web-01 --image=nginx');
     assert.equal(r2.success, true);
-    await new Promise((resolve) => setTimeout(resolve, 2400));
+    clock.advance(1500);
     let pod = sim.getState().pods.find((p) => p.name === 'web-01');
     assert.equal(pod?.ready, true);
 
-    // Req 3: kubectl get pods -o wide
+    // Lesson 5: kubectl get pods -o wide
     const r3 = parser.execute('kubectl get pods -o wide');
     assert.equal(r3.success, true);
     assert.equal(r3.commandType, 'get_pods_wide');
 
-    // Req 4: kubectl describe node
-    const r4 = parser.execute(`kubectl describe node ${pod?.nodeName || 'worker-1'}`);
-    assert.equal(r4.success, true);
-    assert.equal(r4.commandType, 'describe_node');
-
-    // Req 5: kubectl apply -f compute-01.yaml
+    // Lesson 6: kubectl apply -f compute-01.yaml
     const r5 = parser.execute('kubectl apply -f compute-01.yaml');
     assert.equal(r5.success, true);
-    await new Promise((resolve) => setTimeout(resolve, 2400));
+    clock.advance(1500);
     pod = sim.getState().pods.find((p) => p.name === 'compute-01');
     assert.equal(pod?.ready, true);
     assert.equal(pod?.resources.requests?.cpu, 0.5);
 
-    // Req 6: kubectl apply -f db-01.yaml
-    const r6 = parser.execute('kubectl apply -f db-01.yaml');
-    assert.equal(r6.success, true);
-    await new Promise((resolve) => setTimeout(resolve, 2400));
-    pod = sim.getState().pods.find((p) => p.name === 'db-01');
-    assert.equal(pod?.ready, true);
-    assert.equal(pod?.resources.requests?.memory, 1024);
-
-    // Req 7: kubectl apply -f big-cache.yaml (FailedScheduling)
+    // Lesson 7: kubectl apply -f big-cache.yaml (FailedScheduling)
     const r7 = parser.execute('kubectl apply -f big-cache.yaml');
     assert.equal(r7.success, true);
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    clock.advance(600);
     pod = sim.getState().pods.find((p) => p.name === 'big-cache');
     assert.equal(pod?.phase, 'Pending');
     assert.equal(pod?.nodeName, null);
 
-    // Req 8: kubectl delete pod big-cache
+    // Lesson 8: kubectl delete pod big-cache
     const r8 = parser.execute('kubectl delete pod big-cache');
     assert.equal(r8.success, true);
     assert.equal(sim.getState().pods.some((p) => p.name === 'big-cache'), false);
-
-    // Req 9: kubectl apply -f gateway-01.yaml
-    const r9 = parser.execute('kubectl apply -f gateway-01.yaml');
-    assert.equal(r9.success, true);
-    await new Promise((resolve) => setTimeout(resolve, 2400));
-    pod = sim.getState().pods.find((p) => p.name === 'gateway-01');
-    assert.equal(pod?.ready, true);
-    assert.equal(pod?.nodeName, 'worker-2', 'Only worker-2 has sufficient remaining allocatable memory (2048Mi) and CPU (1000m)');
   });
 
-  it('Rule 14: Runaway Loop Guard - 100 subsequent cluster state events do NOT cause score explosion or re-satisfaction', async () => {
-    const sim = new ClusterSimulator();
-    sim.updateScore(150, true);
-    const initialScore = sim.getState().score;
-    const initialStreak = sim.getState().slaStreak;
-    assert.equal(initialScore, 150);
-    assert.equal(initialStreak, 1);
-
-    // Trigger 100 arbitrary cluster events / notifications
-    for (let i = 0; i < 100; i++) {
-      sim.addEvent({
-        type: 'Normal',
-        reason: 'Heartbeat',
-        object: 'node/worker-1',
-        message: `Node worker-1 posted lease heartbeat ${i}`,
-      });
-    }
-
-    const finalState = sim.getState();
-    assert.equal(finalState.score, initialScore, 'Score must remain completely stable without runaway loop');
-    assert.equal(finalState.slaStreak, initialStreak, 'SLA streak must remain completely stable');
-  });
-
-  it('Rule 15: Cross-lane projectile trajectory and customer persistence during flight', async () => {
-    const { EntityManager } = await import('../engine/EntityManager.ts');
-    const { eventBus } = await import('../engine/GameEventBus.ts');
-
-    const em = new EntityManager();
-    const testReq = {
-      id: 'req-test-01',
-      customerName: 'Test Customer',
-      customerRole: 'Frontend Traffic',
-      characterType: 'normal' as const,
-      title: 'Deploy NGINX',
-      description: 'Test',
-      requirements: { type: 'create-pod' as const, podName: 'web-01' },
-      lane: 0,
-      slaTimeSeconds: 30,
-      rewardPoints: 100,
-      hints: ['', '', '', ''] as [string, string, string, string],
-      learningNote: '',
-    };
-
-    // 1. Spawn customer in lane 0
-    const cust = em.spawnCustomer(testReq, 800, 100);
-    assert.equal(em.customers.length, 1);
-    assert.equal(cust.status, 'active');
-
-    // 2. Pod schedules to worker-3 in lane 2 (cross-lane!)
-    // When SATISFYING begins, customer status becomes 'satisfying' and freezes
-    cust.status = 'satisfying';
-    const initialX = cust.pixelX;
-    em.update(0.1, 160);
-    assert.equal(cust.pixelX, initialX, 'Customer must freeze position during satisfying status');
-
-    // 3. Spawn cross-lane projectile from lane 2 (worker-3, Y=300) to lane 0 (customer, Y=100)
-    let hitEventEmitted = false;
-    const unsub = eventBus.on('PROJECTILE_HIT', (payload) => {
-      if (payload.requestId === 'req-test-01') {
-        hitEventEmitted = true;
-      }
-    });
-
-    em.spawnProjectile('req-test-01', 'worker-3', 2, 0, 200, 300, cust.pixelX, 100);
-    assert.equal(em.projectiles.length, 1);
-
-    // Advance simulation half-way: projectile is mid-air, customer MUST STILL BE IN EntityManager
-    em.update(0.1, 160);
-    assert.equal(em.customers.length, 1, 'Customer MUST NOT disappear while projectile is in flight');
-    assert.equal(hitEventEmitted, false);
-
-    // Advance simulation until projectile hits target
-    em.update(1.0, 160);
-    assert.equal(hitEventEmitted, true, 'PROJECTILE_HIT event must be emitted upon projectile arrival');
-    assert.equal(em.projectiles.length, 0, 'Completed projectile should be removed');
-    assert.equal(em.customers.length, 0, 'Customer entity is cleaned up after impact');
-
-    unsub();
-  });
-
-  it('Rule 16: Duplicate command execution after workload ready returns AlreadyExists and does not corrupt score', () => {
-    const sim = new ClusterSimulator();
+  it('Rule 15: Mission-aware error recovery when Pod already exists with wrong image', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
     const parser = new CommandParser(sim);
 
-    const r1 = parser.execute('kubectl run web-01 --image=nginx');
-    assert.equal(r1.success, true);
+    // Beginner mistakenly runs apache image
+    parser.execute('kubectl run web-01 --image=apache');
 
-    // Execute same command again
-    const r2 = parser.execute('kubectl run web-01 --image=nginx');
-    assert.equal(r2.success, false);
-    assert.ok(r2.output.includes('AlreadyExists'));
-
-    assert.equal(sim.getState().pods.filter((p) => p.name === 'web-01').length, 1);
+    // Beginner attempts to run required nginx image with same pod name
+    const result = parser.execute('kubectl run web-01 --image=nginx');
+    assert.equal(result.success, false);
+    assert.ok(result.output.includes('Recovery Guidance'));
+    assert.ok(result.output.includes('kubectl delete pod web-01'));
+    assert.ok(result.output.includes('kubectl run web-01 --image=nginx'));
   });
 
-  it('Rule 17: SLA Breach vs Satisfaction Race Condition atomicity', () => {
-    const sim = new ClusterSimulator();
+  it('Rule 16: Unknown flags are rejected with clear educational guidance', () => {
+    const clock = new SimulationClock();
+    const sim = new ClusterSimulator(undefined, clock);
+    const parser = new CommandParser(sim);
 
-    // Damage node once
-    sim.damageNode(0, 25);
-    assert.equal(sim.getState().nodes[0].health, 75);
-    assert.equal(sim.getState().slaStreak, 0);
-
-    // Successful score increment
-    sim.updateScore(150, true);
-    assert.equal(sim.getState().score, 150);
-    assert.equal(sim.getState().slaStreak, 1);
-    assert.equal(sim.getState().requestsCompleted, 1);
+    const res = parser.execute('kubectl get nodes --unknown-flag');
+    assert.equal(res.success, false);
+    assert.ok(res.output.includes('unknown flag: --unknown-flag'));
   });
 });

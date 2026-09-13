@@ -84,7 +84,7 @@ export class CommandParser {
 
     if (first !== 'kubectl') {
       return {
-        output: `bash: ${first}: command not found\n\nHint: You are on a Kubernetes bastion host. Use 'kubectl' commands, e.g. 'kubectl get nodes', 'kubectl run web-01 --image=nginx', or 'kubectl apply -f compute-01.yaml'. Type 'help' for examples.`,
+        output: `bash: ${first}: command not found\n\nHint: You are in a Kubernetes simulation terminal. Use 'kubectl' commands, e.g. 'kubectl get nodes', 'kubectl run web-01 --image=nginx', or 'kubectl apply -f compute-01.yaml'. Type 'help' for examples.`,
         success: false,
         commandType: 'unknown',
         educationalHint: `Kubernetes CLI commands begin with 'kubectl'. Try 'kubectl get nodes' or 'kubectl get pods'.`,
@@ -120,7 +120,7 @@ export class CommandParser {
         return this.handleRun(parsedOpts);
       case 'apply':
       case 'create':
-        return this.handleApply(parsedOpts, verb);
+        return this.handleApplyOrCreate(parsedOpts, verb);
       case 'delete':
         return this.handleDelete(parsedOpts);
       case 'cluster-info':
@@ -135,7 +135,7 @@ export class CommandParser {
       case 'drain':
       case 'scale':
         return {
-          output: `info: The simulator does not implement "kubectl ${verb}" in this training stage yet.\nSupported commands in Chapter 1: kubectl get, kubectl describe, kubectl run, kubectl apply -f, kubectl delete.`,
+          output: `info: The simulation does not implement "kubectl ${verb}" in Chapter 1.\nSupported commands in this chapter: kubectl get, kubectl describe, kubectl run, kubectl apply -f, kubectl delete.`,
           success: false,
           commandType: `unimplemented_${verb}`,
           educationalHint: `Use 'kubectl get nodes', 'kubectl get pods -o wide', 'kubectl describe node <name>', 'kubectl run <name> --image=<image>', or 'kubectl apply -f <manifest.yaml>'.`,
@@ -162,7 +162,7 @@ export class CommandParser {
 
   /**
    * Reusable, robust flag and options parser.
-   * Accurately distinguishes -o wide / --output=wide from -o json / -o yaml.
+   * Accurately parses -o wide / json / yaml / name and rejects unsupported flags with helpful errors.
    */
   private parseOptions(args: string[]): ParsedOptions {
     const opts: ParsedOptions = {
@@ -217,8 +217,13 @@ export class CommandParser {
       } else if (arg.startsWith('--overrides=')) {
         opts.overrides = arg.split('=')[1];
       }
+      // Rejection of unknown flags
+      else if (arg.startsWith('-')) {
+        opts.flagsError = `error: unknown flag: ${arg}\nSee 'kubectl --help' for valid options in this simulation.`;
+        return opts;
+      }
       // Positional args
-      else if (!arg.startsWith('-')) {
+      else {
         opts.positionalArgs.push(arg);
       }
     }
@@ -244,6 +249,11 @@ export class CommandParser {
     if (resource === 'node' || resource === 'nodes' || resource === 'no') {
       const state = this.simulator.getState();
 
+      if (opts.outputFormat === 'name') {
+        const nameOutput = state.nodes.map((n) => `node/${n.name}`).join('\n');
+        return { output: nameOutput, success: true, commandType: 'get_nodes_name' };
+      }
+
       if (opts.outputFormat === 'json') {
         const jsonOutput = JSON.stringify(
           {
@@ -265,25 +275,34 @@ export class CommandParser {
       }
 
       if (opts.outputFormat === 'yaml') {
-        return {
-          output: `apiVersion: v1\nkind: NodeList\nitems:\n${state.nodes.map((n) => `  - metadata:\n      name: ${n.name}\n    status:\n      allocatable:\n        cpu: "${n.cpuAllocatable}"\n        memory: "${n.memoryAllocatable}Mi"`).join('\n')}`,
-          success: true,
-          commandType: 'get_nodes_yaml',
-        };
+        const yamlOutput = `apiVersion: v1
+kind: NodeList
+items:
+${state.nodes
+  .map(
+    (n) => `  - metadata:
+      name: ${n.name}
+    status:
+      allocatable:
+        cpu: "${n.cpuAllocatable}"
+        memory: "${n.memoryAllocatable}Mi"`
+  )
+  .join('\n')}`;
+        return { output: yamlOutput, success: true, commandType: 'get_nodes_yaml' };
       }
 
       const headers = isWide
         ? 'NAME       STATUS   ROLES    AGE   VERSION   INTERNAL-IP   OS-IMAGE\n'
         : 'NAME       STATUS   ROLES    AGE   VERSION\n';
 
-      const rows = state.nodes.map((n) => {
+      const rows = state.nodes.map((n, idx) => {
         const namePad = n.name.padEnd(10);
         const statusPad = n.status.padEnd(8);
         const rolePad = n.role.padEnd(8);
         const age = '24d';
         const ver = 'v1.30.0';
         if (isWide) {
-          const ip = `192.168.10.${n.laneIndex + 10}`;
+          const ip = `192.168.10.${idx + 10}`;
           return `${namePad} ${statusPad} ${rolePad} ${age.padEnd(5)} ${ver.padEnd(9)} ${ip.padEnd(13)} Ubuntu 24.04 LTS`;
         }
         return `${namePad} ${statusPad} ${rolePad} ${age.padEnd(5)} ${ver}`;
@@ -324,6 +343,11 @@ export class CommandParser {
         };
       }
 
+      if (opts.outputFormat === 'name') {
+        const nameOutput = targetPods.map((p) => `pod/${p.name}`).join('\n');
+        return { output: nameOutput, success: true, commandType: 'get_pods_name' };
+      }
+
       if (opts.outputFormat === 'json') {
         const jsonOutput = JSON.stringify(
           {
@@ -332,13 +356,30 @@ export class CommandParser {
             items: targetPods.map((p) => ({
               metadata: { name: p.name, namespace: p.namespace },
               spec: { nodeName: p.nodeName, containers: [{ name: p.name, image: p.image, resources: p.resources }] },
-              status: { phase: p.phase, conditions: p.conditions, podIP: p.ip },
+              status: { phase: p.phase, containerState: p.containerState, waitingReason: p.waitingReason, conditions: p.conditions, podIP: p.ip },
             })),
           },
           null,
           2
         );
         return { output: jsonOutput, success: true, commandType: 'get_pods_json' };
+      }
+
+      if (opts.outputFormat === 'yaml') {
+        const yamlOutput = `apiVersion: v1
+kind: PodList
+items:
+${targetPods
+  .map(
+    (p) => `  - metadata:
+      name: ${p.name}
+      namespace: ${p.namespace}
+    status:
+      phase: ${p.phase}
+      podIP: "${p.ip || '<none>'}"`
+  )
+  .join('\n')}`;
+        return { output: yamlOutput, success: true, commandType: 'get_pods_yaml' };
       }
 
       const headers = isWide
@@ -351,11 +392,13 @@ export class CommandParser {
         const ageStr = `${ageSeconds}s`;
         const nodeStr = p.nodeName || '<none>';
         const ipStr = p.ip || '<none>';
+        // Display waiting reason if waiting, otherwise phase
+        const statusStr = p.waitingReason || p.phase;
 
         if (isWide) {
-          return `${p.name.padEnd(16)} ${readyStr.padEnd(7)} ${p.status.padEnd(18)} ${String(p.restarts).padEnd(10)} ${ageStr.padEnd(5)} ${ipStr.padEnd(12)} ${nodeStr.padEnd(10)} <none>           <none>`;
+          return `${p.name.padEnd(16)} ${readyStr.padEnd(7)} ${statusStr.padEnd(18)} ${String(p.restarts).padEnd(10)} ${ageStr.padEnd(5)} ${ipStr.padEnd(12)} ${nodeStr.padEnd(10)} <none>           <none>`;
         }
-        return `${p.name.padEnd(16)} ${readyStr.padEnd(7)} ${p.status.padEnd(18)} ${String(p.restarts).padEnd(10)} ${ageStr}`;
+        return `${p.name.padEnd(16)} ${readyStr.padEnd(7)} ${statusStr.padEnd(18)} ${String(p.restarts).padEnd(10)} ${ageStr}`;
       });
 
       return {
@@ -414,21 +457,21 @@ export class CommandParser {
       const totalCpuLim = boundPods.reduce((sum, p) => sum + (p.resources.limits?.cpu || p.resources.requests?.cpu || 0), 0);
       const totalMemLim = boundPods.reduce((sum, p) => sum + (p.resources.limits?.memory || p.resources.requests?.memory || 0), 0);
 
-      const cpuReqPercent = Math.round((totalCpuReq / node.cpuAllocatable) * 100);
-      const memReqPercent = Math.round((totalMemReq / node.memoryAllocatable) * 100);
-      const cpuLimPercent = Math.round((totalCpuLim / node.cpuAllocatable) * 100);
-      const memLimPercent = Math.round((totalMemLim / node.memoryAllocatable) * 100);
+      const cpuReqPercent = Math.round((totalCpuReq / Math.max(0.1, node.cpuAllocatable)) * 100);
+      const memReqPercent = Math.round((totalMemReq / Math.max(1, node.memoryAllocatable)) * 100);
+      const cpuLimPercent = Math.round((totalCpuLim / Math.max(0.1, node.cpuAllocatable)) * 100);
+      const memLimPercent = Math.round((totalMemLim / Math.max(1, node.memoryAllocatable)) * 100);
 
       const podRows = boundPods.length === 0
         ? '  <none>'
         : boundPods
             .map((p) => {
-              const reqCpu = p.resources.requests?.cpu ?? 0.25;
-              const reqMem = p.resources.requests?.memory ?? 256;
+              const reqCpu = p.resources.requests?.cpu ?? 0;
+              const reqMem = p.resources.requests?.memory ?? 0;
               const limCpu = p.resources.limits?.cpu ?? reqCpu;
               const limMem = p.resources.limits?.memory ?? reqMem;
-              const pCpuPct = Math.round((reqCpu / node.cpuAllocatable) * 100);
-              const pMemPct = Math.round((reqMem / node.memoryAllocatable) * 100);
+              const pCpuPct = Math.round((reqCpu / Math.max(0.1, node.cpuAllocatable)) * 100);
+              const pMemPct = Math.round((reqMem / Math.max(1, node.memoryAllocatable)) * 100);
               return `  ${state.namespace.padEnd(18)} ${p.name.padEnd(18)} ${formatCpu(reqCpu)} (${pCpuPct}%)`.padEnd(52) +
                 `${formatCpu(limCpu)}`.padEnd(12) +
                 `${formatMemory(reqMem)} (${pMemPct}%)`.padEnd(18) +
@@ -436,10 +479,13 @@ export class CommandParser {
             })
             .join('\n');
 
+      const nodeIdx = state.nodes.findIndex((n) => n.name === node.name);
+      const laneNum = nodeIdx >= 0 ? nodeIdx + 1 : 1;
+
       const output = `Name:               ${node.name}
 Roles:              ${node.role}
 Labels:             node-role.kubernetes.io/worker=
-                    topology.kubernetes.io/zone=lane-${node.laneIndex + 1}
+                    topology.kubernetes.io/zone=lane-${laneNum}
 Status:             ${node.status}
 Capacity:
   cpu:                ${node.cpuCapacity}
@@ -490,8 +536,8 @@ Events:
             .map((e) => `  ${e.type.padEnd(7)} ${e.reason.padEnd(16)} ${e.timeSeconds}s   ${e.step ? e.step.toLowerCase() : 'kubelet'}   ${e.message}`)
             .join('\n');
 
-      const reqCpu = pod.resources.requests?.cpu ?? 0.25;
-      const reqMem = pod.resources.requests?.memory ?? 256;
+      const reqCpu = pod.resources.requests?.cpu ?? 0;
+      const reqMem = pod.resources.requests?.memory ?? 0;
       const limCpu = pod.resources.limits?.cpu;
       const limMem = pod.resources.limits?.memory;
 
@@ -499,17 +545,19 @@ Events:
         .map((c) => `  Type:             ${c.type}\n  Status:           ${c.status}${c.reason ? '\n  Reason:           ' + c.reason : ''}`)
         .join('\n');
 
+      const containerStatusStr = pod.phase === 'Running' ? 'Running' : pod.waitingReason ? `Waiting (${pod.waitingReason})` : `Waiting (${pod.phase})`;
+
       const output = `Name:         ${pod.name}
 Namespace:    ${state.namespace}
 Priority:     0
-Node:         ${pod.nodeName ? `${pod.nodeName}/192.168.10.${(pod.laneIndex || 0) + 10}` : '<none>'}
-Status:       ${pod.status}
+Node:         ${pod.nodeName ? `${pod.nodeName}` : '<none>'}
+Status:       ${pod.phase}
 IP:           ${pod.ip || '<none>'}
 Containers:
   ${pod.name}:
-    Container ID:   ${pod.status === 'Running' ? `${state.containerRuntime}://${Math.random().toString(36).substring(2, 12)}` : '<none>'}
+    Container ID:   ${pod.phase === 'Running' ? `${state.containerRuntime}://${Math.random().toString(36).substring(2, 12)}` : '<none>'}
     Image:          ${pod.normalizedImage.fullName}
-    State:          ${pod.status === 'Running' ? 'Running' : pod.status === 'ContainerCreating' ? 'Waiting (ContainerCreating)' : 'Waiting (Pending)'}
+    State:          ${containerStatusStr}
     Ready:          ${pod.ready ? 'True' : 'False'}
     Restart Count:  ${pod.restarts}
     Requests:
@@ -560,8 +608,8 @@ ${eventsText}`;
       };
     }
 
-    let cpuReq = 0.25;
-    let memReq = 256;
+    let cpuReq = 0;
+    let memReq = 0;
 
     // Support --overrides if JSON format provided
     if (opts.overrides) {
@@ -587,6 +635,19 @@ ${eventsText}`;
       requests: { cpu: cpuReq, memory: memReq },
     });
 
+    // Provide mission recovery guidance if Pod already exists
+    if (!result.success && result.message.includes('AlreadyExists')) {
+      const existingPod = this.simulator.getState().pods.find((p) => p.name === podName);
+      if (existingPod && existingPod.image !== image) {
+        return {
+          output: `${result.message}\n\nRecovery Guidance:\nA Pod named "${podName}" already exists using image "${existingPod.image}".\nTo correct it:\n  1. Inspect:  kubectl describe pod ${podName}\n  2. Delete:   kubectl delete pod ${podName}\n  3. Recreate: kubectl run ${podName} --image=${image}`,
+          success: false,
+          commandType: 'run_already_exists_wrong_image',
+          educationalHint: `Delete the existing pod first with: kubectl delete pod ${podName}`,
+        };
+      }
+    }
+
     return {
       output: result.message,
       success: result.success,
@@ -600,14 +661,17 @@ ${eventsText}`;
     };
   }
 
-  private handleApply(opts: ParsedOptions, verb: string): CommandResult {
+  /**
+   * Distinguishes kubectl apply (declarative, idempotent) from kubectl create (imperative, fails on existing).
+   */
+  private handleApplyOrCreate(opts: ParsedOptions, verb: 'apply' | 'create'): CommandResult {
     const filename = opts.filename;
     if (!filename) {
       return {
         output: `error: must specify one of -f and -k\n\nUsage: kubectl ${verb} -f <filename.yaml>`,
         success: false,
-        commandType: 'apply_no_file',
-        educationalHint: `Specify the YAML manifest file: kubectl ${verb} -f <filename.yaml>. E.g. kubectl apply -f compute-01.yaml`,
+        commandType: `${verb}_no_file`,
+        educationalHint: `Specify the YAML manifest file: kubectl ${verb} -f <filename.yaml>. E.g. kubectl ${verb} -f compute-01.yaml`,
       };
     }
 
@@ -616,13 +680,38 @@ ${eventsText}`;
       return {
         output: `error: the path "${filename}" does not exist\nAvailable manifests: ${Object.keys(VIRTUAL_MANIFESTS).join(', ')}`,
         success: false,
-        commandType: 'apply_file_not_found',
+        commandType: `${verb}_file_not_found`,
         educationalHint: `Manifest '${filename}' was not found. Use 'ls' to view available training manifests.`,
       };
     }
 
-    const cpuReq = manifest.cpuRequest ?? 0.25;
-    const memReq = manifest.memoryRequest ?? 256;
+    const existingPod = this.simulator.getState().pods.find((p) => p.name === manifest.name);
+
+    if (existingPod) {
+      if (verb === 'create') {
+        return {
+          output: `Error from server (AlreadyExists): pods "${manifest.name}" already exists in namespace "${this.simulator.getState().namespace}"`,
+          success: false,
+          commandType: 'create_already_exists',
+          educationalHint: `kubectl create cannot update existing objects. Use 'kubectl apply' or delete the existing pod.`,
+        };
+      } else {
+        // kubectl apply on unchanged object
+        return {
+          output: `pod/${manifest.name} unchanged`,
+          success: true,
+          commandType: 'apply_unchanged',
+          parsedObject: {
+            name: manifest.name,
+            image: manifest.image,
+            filename,
+          },
+        };
+      }
+    }
+
+    const cpuReq = manifest.cpuRequest ?? 0;
+    const memReq = manifest.memoryRequest ?? 0;
 
     const result = this.simulator.createPod(manifest.name, manifest.image, {
       requests: { cpu: cpuReq, memory: memReq },
@@ -632,7 +721,7 @@ ${eventsText}`;
     return {
       output: result.message,
       success: result.success,
-      commandType: 'apply_manifest',
+      commandType: `${verb}_manifest`,
       parsedObject: {
         name: manifest.name,
         image: manifest.image,
@@ -725,7 +814,7 @@ DESCRIPTION:
 
   private handleHelp(): CommandResult {
     const output = `========================================================================
-       KUBERNETES DEFENSE — BASTION TERMINAL COMMANDS (v1.30.0)
+       KUBERNETES DEFENSE — TERMINAL COMMANDS (v1.30.0)
 ========================================================================
 
 INSPECTION & OBSERVABILITY:

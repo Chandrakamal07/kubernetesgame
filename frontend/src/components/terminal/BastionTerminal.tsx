@@ -1,224 +1,251 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useGameStore } from '../../state/useGameStore';
-import { eventBus } from '../../engine/GameEventBus';
-import { Terminal, CornerDownLeft, HelpCircle, Trash2, Maximize2, Minimize2 } from 'lucide-react';
+import {
+  Terminal as TerminalIcon,
+  Play,
+  Trash2,
+  Copy,
+  Maximize2,
+  Minimize2,
+  Check,
+} from 'lucide-react';
+
+const AUTOCOMPLETE_SUGGESTIONS = [
+  'kubectl get nodes',
+  'kubectl get nodes -o wide',
+  'kubectl get pods',
+  'kubectl get pods -o wide',
+  'kubectl describe node worker-1',
+  'kubectl describe node worker-2',
+  'kubectl describe node worker-3',
+  'kubectl describe pod web-01',
+  'kubectl describe pod compute-01',
+  'kubectl describe pod big-cache',
+  'kubectl run web-01 --image=nginx',
+  'kubectl apply -f compute-01.yaml',
+  'kubectl apply -f db-01.yaml',
+  'kubectl apply -f big-cache.yaml',
+  'kubectl delete pod big-cache',
+  'kubectl cluster-info',
+  'kubectl explain pod',
+  'kubectl explain node',
+  'ls',
+  'cat compute-01.yaml',
+  'cat db-01.yaml',
+  'cat big-cache.yaml',
+  'clear',
+  'help',
+];
 
 export const BastionTerminal: React.FC = () => {
-  const { terminalHistory, actions, lastCommand } = useGameStore();
-  const [inputVal, setInputVal] = useState('');
-  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const historyCommandsRef = useRef<string[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const {
+    terminalHistory,
+    terminalInputToInsert,
+    isTerminalExpanded,
+    activeMission,
+    actions,
+  } = useGameStore();
+
+  const [input, setInput] = useState('');
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const [copied, setCopied] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Synchronize inserted terminal commands from MissionPanel / HintModal
   useEffect(() => {
-    const unsub = eventBus.on('INSERT_TERMINAL_INPUT', (cmd) => {
-      setInputVal(cmd);
-      inputRef.current?.focus();
-    });
-    return unsub;
-  }, []);
-
-  useEffect(() => {
-    if (lastCommand && !historyCommandsRef.current.includes(lastCommand)) {
-      historyCommandsRef.current.push(lastCommand);
+    if (terminalInputToInsert !== null) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setInput(terminalInputToInsert);
+      actions.clearTerminalInputInsert();
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
     }
-  }, [lastCommand]);
+  }, [terminalInputToInsert, actions]);
 
+  // Auto-scroll terminal to bottom when new entries arrive
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [terminalHistory]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputVal.trim()) return;
-    actions.executeCommand(inputVal);
-    setInputVal('');
-    setHistoryIndex(null);
+  const handleExecute = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cmd = input.trim();
+    if (!cmd) return;
+
+    actions.executeCommand(cmd);
+    setInput('');
+    setHistoryIndex(-1);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Arrow Up: Previous command
     if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const list = historyCommandsRef.current;
-      if (list.length === 0) return;
+      const validHistory = terminalHistory.filter((h) => !h.command.startsWith('#'));
+      if (validHistory.length === 0) return;
 
-      const nextIndex = historyIndex === null ? list.length - 1 : Math.max(0, historyIndex - 1);
-      setHistoryIndex(nextIndex);
-      setInputVal(list[nextIndex] || '');
-    } else if (e.key === 'ArrowDown') {
+      const nextIdx = historyIndex === -1 ? validHistory.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(nextIdx);
+      setInput(validHistory[nextIdx].command);
+    }
+    // Arrow Down: Next command
+    else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const list = historyCommandsRef.current;
-      if (list.length === 0 || historyIndex === null) return;
+      const validHistory = terminalHistory.filter((h) => !h.command.startsWith('#'));
+      if (historyIndex === -1) return;
 
-      const nextIndex = historyIndex + 1;
-      if (nextIndex >= list.length) {
-        setHistoryIndex(null);
-        setInputVal('');
+      const nextIdx = historyIndex + 1;
+      if (nextIdx >= validHistory.length) {
+        setHistoryIndex(-1);
+        setInput('');
       } else {
-        setHistoryIndex(nextIndex);
-        setInputVal(list[nextIndex] || '');
+        setHistoryIndex(nextIdx);
+        setInput(validHistory[nextIdx].command);
       }
-    } else if (e.key === 'l' && e.ctrlKey) {
+    }
+    // Tab: Autocomplete
+    else if (e.key === 'Tab') {
       e.preventDefault();
-      actions.executeCommand('clear');
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      const val = inputVal.trim();
-      if (val === 'kubectl get' || val === 'oc get') setInputVal('kubectl get pods');
-      else if (val === 'kubectl get n' || val === 'kubectl get no' || val === 'oc get n') setInputVal('kubectl get nodes');
-      else if (val === 'kubectl get p' || val === 'kubectl get po' || val === 'oc get p') setInputVal('kubectl get pods');
-      else if (val === 'kubectl get pods -' || val === 'oc get pods -') setInputVal('kubectl get pods -o wide');
-      else if (val === 'kubectl r' || val === 'kubectl ru' || val === 'oc r') setInputVal('kubectl run web-01 --image=nginx');
-      else if (val === 'kubectl a' || val === 'kubectl ap') setInputVal('kubectl apply -f compute-01.yaml');
-      else if (val === 'kubectl d' || val === 'kubectl des' || val === 'oc d') setInputVal('kubectl describe node worker-1');
+      const trimmed = input.trim().toLowerCase();
+      if (!trimmed) return;
+
+      const match = AUTOCOMPLETE_SUGGESTIONS.find((s) => s.toLowerCase().startsWith(trimmed));
+      if (match) {
+        setInput(match);
+      }
     }
   };
 
-  const formatOutput = (text: string) => {
-    if (!text) return null;
-
-    const lines = text.split('\n');
-    return lines.map((line, idx) => {
-      let lineClass = 'text-[#C6CDDB]';
-      if (line.includes('NAME') && (line.includes('STATUS') || line.includes('READY'))) {
-        lineClass = 'text-[#6594FF] font-semibold';
-      } else if (line.includes('Ready') || line.includes('Running') || line.includes('created') || line.includes('Started')) {
-        lineClass = 'text-[#54D98C]';
-      } else if (line.includes('Pending') || line.includes('ContainerCreating') || line.includes('Scheduling')) {
-        lineClass = 'text-[#F2B95F]';
-      } else if (line.includes('error:') || line.includes('Error') || line.includes('NotReady') || line.includes('Failed')) {
-        lineClass = 'text-[#F06D78] font-medium';
-      } else if (line.startsWith('Hint:') || line.includes('Did you mean')) {
-        lineClass = 'text-[#C6CDDB] italic';
-      } else if (line.startsWith('===')) {
-        lineClass = 'text-[#32D5D2] font-semibold';
-      }
-
-      return (
-        <div key={idx} className={`${lineClass} font-mono leading-relaxed whitespace-pre-wrap`}>
-          {line}
-        </div>
-      );
-    });
+  const copyScrollback = () => {
+    const text = terminalHistory.map((h) => `$ ${h.command}\n${h.output}`).join('\n\n');
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
     <div
-      className={`flex flex-col bg-[#050711] border-t border-[rgba(132,156,205,0.16)] backdrop-blur-xl transition-all duration-300 ${
-        isExpanded ? 'h-[450px] absolute bottom-0 left-0 right-0 z-30 shadow-2xl' : 'h-full'
+      className={`flex flex-col h-full bg-[#070B14] font-mono text-xs text-[#F8FAFC] select-text border-t border-[rgba(148,163,184,0.14)] ${
+        isTerminalExpanded ? 'h-96 max-h-[500px]' : ''
       }`}
+      role="region"
+      aria-label="Kubernetes Simulation Terminal"
     >
-      {/* Terminal Titlebar & Command Action Chips */}
-      <div className="flex items-center justify-between px-4 py-2 bg-[#080B17] border-b border-[rgba(132,156,205,0.14)] text-xs">
-        <div className="flex items-center gap-3">
-          <div className="flex gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#F06D78]/80 inline-block"></span>
-            <span className="w-2.5 h-2.5 rounded-full bg-[#F2B95F]/80 inline-block"></span>
-            <span className="w-2.5 h-2.5 rounded-full bg-[#54D98C]/80 inline-block"></span>
-          </div>
-          <div className="flex items-center gap-1.5 text-[#C6CDDB] font-mono font-medium text-[11px]">
-            <Terminal size={13} className="text-[#4F7CFF]" />
-            <span>bastion.k8s-training (~/cluster)</span>
-          </div>
+      {/* Terminal Title Bar */}
+      <div className="h-9 bg-[#0E1625] px-3 flex items-center justify-between border-b border-[rgba(148,163,184,0.14)] select-none">
+        <div className="flex items-center gap-2">
+          <TerminalIcon className="w-3.5 h-3.5 text-[#6EA8FE]" />
+          <span className="font-bold text-[#F8FAFC]">Kubernetes Terminal</span>
+          <span className="hidden md:inline text-[11px] text-[#8190A7] px-2 py-0.5 rounded bg-[#151F31] border border-[rgba(148,163,184,0.1)]">
+            Safe browser simulation — no real cluster is modified
+          </span>
         </div>
 
-        {/* Quick Command Suggestion Chips */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           <button
-            onClick={() => actions.executeCommand('kubectl get nodes')}
-            className="px-2.5 py-1 rounded-md bg-[#11182A] hover:bg-[#1B2640] text-[#6594FF] font-mono text-[11px] transition-all border border-[#4F7CFF]/25 hover:border-[#4F7CFF]/50 cursor-pointer active:scale-95"
-            title="List worker nodes"
+            onClick={copyScrollback}
+            className="p-1 rounded hover:bg-[#151F31] text-[#8190A7] hover:text-[#F8FAFC] transition-colors"
+            title="Copy scrollback output"
+            aria-label="Copy terminal output"
           >
-            kubectl get nodes
-          </button>
-          <button
-            onClick={() => actions.executeCommand('kubectl get pods -o wide')}
-            className="px-2.5 py-1 rounded-md bg-[#11182A] hover:bg-[#1B2640] text-[#6594FF] font-mono text-[11px] transition-all border border-[#4F7CFF]/25 hover:border-[#4F7CFF]/50 cursor-pointer active:scale-95"
-            title="List pods with assigned node"
-          >
-            kubectl get pods -o wide
-          </button>
-          <button
-            onClick={() => actions.executeCommand('help')}
-            className="px-2.5 py-1 rounded-md bg-[#11182A] hover:bg-[#1B2640] text-[#F2B95F] font-mono text-[11px] flex items-center gap-1 transition-all border border-[#F2B95F]/25 hover:border-[#F2B95F]/50 cursor-pointer active:scale-95"
-            title="Show commands reference"
-          >
-            <HelpCircle size={11} />
-            <span>help</span>
+            {copied ? <Check className="w-3.5 h-3.5 text-[#4ADE80]" /> : <Copy className="w-3.5 h-3.5" />}
           </button>
           <button
             onClick={() => actions.executeCommand('clear')}
-            className="px-2 py-1 rounded-md bg-[#11182A] hover:bg-[#1B2640] text-[#7F8CA3] hover:text-[#F7F9FF] font-mono text-[11px] flex items-center gap-1 transition-all border border-[rgba(132,156,205,0.16)] cursor-pointer active:scale-95"
-            title="Clear terminal screen (Ctrl+L)"
+            className="p-1 rounded hover:bg-[#151F31] text-[#8190A7] hover:text-[#F8FAFC] transition-colors"
+            title="Clear terminal"
+            aria-label="Clear terminal"
           >
-            <Trash2 size={11} />
-            <span>clear</span>
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="p-1 rounded-md bg-[#11182A] hover:bg-[#1B2640] text-[#7F8CA3] hover:text-[#F7F9FF] transition-all border border-[rgba(132,156,205,0.16)] cursor-pointer"
-            title={isExpanded ? 'Collapse terminal' : 'Expand terminal'}
+            onClick={actions.toggleTerminalExpanded}
+            className="p-1 rounded hover:bg-[#151F31] text-[#8190A7] hover:text-[#F8FAFC] transition-colors"
+            title={isTerminalExpanded ? 'Collapse terminal' : 'Expand terminal'}
+            aria-label={isTerminalExpanded ? 'Collapse terminal' : 'Expand terminal'}
           >
-            {isExpanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            {isTerminalExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
 
-      {/* Terminal History Output Stream */}
-      <div
-        className="flex-1 p-4 overflow-y-auto font-mono text-[13px] space-y-2.5 cursor-text selection:bg-[#4F7CFF]/30 selection:text-[#F7F9FF]"
-        onClick={() => inputRef.current?.focus()}
-      >
+      {/* Guided Command Token Breakdown Banner */}
+      {activeMission?.guidedCommand && (
+        <div className="bg-[#0E1625]/90 border-b border-[rgba(148,163,184,0.1)] px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto">
+          <div className="flex items-center gap-1.5 flex-nowrap">
+            <span className="text-[10px] text-[#8190A7] font-semibold uppercase tracking-wider">Suggested:</span>
+            {activeMission.guidedCommand.segments.map((seg, idx) => (
+              <span
+                key={idx}
+                className="px-1.5 py-0.5 rounded bg-[#151F31] border border-[rgba(110,168,254,0.25)] text-[11px] text-[#6EA8FE]"
+                title={seg.meaning}
+              >
+                {seg.token}
+              </span>
+            ))}
+          </div>
+          <button
+            onClick={() => actions.insertTerminalInput(activeMission.guidedCommand!.fullCommand)}
+            className="text-[11px] font-semibold text-[#5EEAD4] hover:underline whitespace-nowrap ml-2"
+          >
+            Insert
+          </button>
+        </div>
+      )}
+
+      {/* Terminal Scrollback Output */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 font-mono leading-relaxed">
         {terminalHistory.map((item) => (
-          <div key={item.id} className="space-y-0.5">
-            {item.command && (
-              <div className="flex items-center gap-2 text-[#7F8CA3]">
-                <span className="text-[#54D98C] font-semibold">[student@k8s-bastion ~]$</span>
-                <span className="text-[#F7F9FF] font-medium">{item.command}</span>
-                <span className="text-[10px] text-[#7F8CA3] ml-auto">{item.timestamp}</span>
-              </div>
-            )}
+          <div key={item.id} className="space-y-1">
+            <div className="flex items-center gap-2 text-[#6EA8FE]">
+              <span className="text-[#8190A7]">k8s-admin@k8s-bastion:~$</span>
+              <span className="font-bold text-[#F8FAFC]">{item.command}</span>
+            </div>
             {item.output && (
-              <div className="pl-3 border-l border-[rgba(132,156,205,0.16)] my-1">
-                {formatOutput(item.output)}
-              </div>
+              <pre
+                className={`whitespace-pre-wrap text-xs pl-2 font-mono ${
+                  item.success ? 'text-[#B8C4D6]' : 'text-[#FB7185]'
+                }`}
+              >
+                {item.output}
+              </pre>
             )}
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
 
-      {/* Terminal Command Input Prompt (Tight Tutorial Target) */}
-      <form
-        data-tutorial="terminal-input"
-        onSubmit={handleSubmit}
-        className="flex items-center px-4 py-2.5 bg-[#080B17] border-t border-[rgba(132,156,205,0.16)]"
-      >
-        <span className="text-[#54D98C] font-mono font-semibold mr-2.5 select-none text-[13px]">
-          [student@k8s-bastion ~]$
-        </span>
+      {/* Terminal Input Line & Run Button */}
+      <form onSubmit={handleExecute} className="bg-[#0E1625] border-t border-[rgba(148,163,184,0.14)] px-3 py-2 flex items-center gap-2">
+        <span className="text-[#6EA8FE] font-bold shrink-0">$</span>
         <input
           ref={inputRef}
           type="text"
-          value={inputVal}
-          onChange={(e) => setInputVal(e.target.value)}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Type kubectl command... (e.g. kubectl get nodes, kubectl run web-01 --image=nginx, help)"
-          className="flex-1 bg-transparent border-none outline-none font-mono text-[13px] text-[#6594FF] placeholder:text-[#4A5B73] focus:ring-0"
+          placeholder="Type 'kubectl get nodes', 'kubectl run web-01 --image=nginx', or 'help'..."
+          className="flex-1 bg-transparent text-sm font-mono text-[#F8FAFC] placeholder-[#8190A7] focus:outline-none"
           autoFocus
           spellCheck={false}
           autoComplete="off"
+          aria-label="Kubernetes Command Input"
         />
         <button
           type="submit"
-          className="ml-2 px-3.5 py-1.5 bg-gradient-to-r from-[#4F7CFF] to-[#7765F8] hover:from-[#6594FF] hover:to-[#8B78FF] text-white rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5 shadow-md shadow-[#4F7CFF]/25 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+          className="btn-primary h-8 px-3 text-xs font-bold shrink-0"
+          title="Run command (Enter)"
+          aria-label="Execute Command"
         >
-          <span>RUN</span>
-          <CornerDownLeft size={12} />
+          <Play className="w-3 h-3 fill-current" />
+          <span>Run</span>
         </button>
       </form>
     </div>
   );
 };
+
+export default BastionTerminal;

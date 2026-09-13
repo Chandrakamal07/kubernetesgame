@@ -23,31 +23,31 @@ export interface NodeCondition {
   message: string;
 }
 
+/**
+ * Authentic Kubernetes v1.30.0 Node representation.
+ * Fictional presentation metrics (health, turretAngle, serviceCapacity) are decoupled.
+ */
 export interface K8sNode {
+  uid: string;
   name: string;
   role: NodeRole;
   status: NodeStatus;
   unschedulable?: boolean;
   taints?: Taint[];
-  conditions?: NodeCondition[];
-  health: number; // 0 - 100% (Fictional game defense integrity)
+  conditions: NodeCondition[];
   cpuCapacity: number; // in cores, e.g. 2.0, 4.0
   memoryCapacity: number; // in Mi, e.g. 4096, 8192
-  cpuAllocatable: number; // in cores, e.g. 1.8, 3.8 (Capacity minus system-reserved/kube-reserved)
+  cpuAllocatable: number; // in cores, e.g. 1.8, 3.8 (Capacity minus system/kube reserves)
   memoryAllocatable: number; // in Mi, e.g. 3584, 7680
-  cpuRequested: number; // Sum of scheduled Pod CPU requests (in cores)
-  memoryRequested: number; // Sum of scheduled Pod Memory requests (in Mi)
-  cpuUsage?: number; // Real-time CPU usage (for monitoring)
-  memoryUsage?: number; // Real-time Memory usage (for monitoring)
-  pods: string[]; // pod names bound to this node
-  laneIndex: number; // 0, 1, 2 for worker-1, worker-2, worker-3
+  cpuRequested: number; // Sum of bound Pod CPU requests (in cores)
+  memoryRequested: number; // Sum of bound Pod Memory requests (in Mi)
+  pods: string[]; // Pod names bound to this node
   labels: Record<string, string>;
-  turretAngle: number; // For battlefield canvas rendering (radians)
-  isCharging?: boolean;
-  serviceCapacity: number; // Defenses provided by active running workloads
-  lastFiredTimestamp?: number;
 }
 
+/**
+ * Formal Kubernetes Pod Phase definitions (RFC / Upstream k8s v1.30.0).
+ */
 export type PodPhase = 
   | 'Pending' 
   | 'Running' 
@@ -55,13 +55,19 @@ export type PodPhase =
   | 'Failed' 
   | 'Unknown';
 
-export type PodLifecycleStatus = 
-  | 'Pending' 
+/**
+ * Container execution states.
+ */
+export type ContainerState = 'Waiting' | 'Running' | 'Terminated';
+
+/**
+ * Container waiting/diagnostic reasons shown by kubectl.
+ */
+export type ContainerWaitingReason = 
   | 'ContainerCreating' 
-  | 'Running' 
-  | 'Terminating' 
-  | 'Failed' 
-  | 'Succeeded';
+  | 'CrashLoopBackOff' 
+  | 'ImagePullBackOff' 
+  | 'ErrImagePull';
 
 export interface PodCondition {
   type: 'PodScheduled' | 'Initialized' | 'ContainersReady' | 'Ready';
@@ -73,8 +79,8 @@ export interface PodCondition {
 
 export interface ResourceRequirements {
   requests?: {
-    cpu?: number; // cores, e.g. 0.25 (250m)
-    memory?: number; // Mi, e.g. 256
+    cpu?: number; // cores, e.g. 0.25 (250m) or 0 (explicit zero)
+    memory?: number; // Mi, e.g. 256 or 0
   };
   limits?: {
     cpu?: number;
@@ -87,14 +93,17 @@ export interface NormalizedImage {
   repository: string;
   tag: string;
   fullName: string;
+  digest?: string;
 }
 
 export interface K8sPod {
+  uid: string;
   name: string;
   image: string;
   normalizedImage: NormalizedImage;
   phase: PodPhase;
-  status: PodLifecycleStatus;
+  containerState: ContainerState;
+  waitingReason?: ContainerWaitingReason;
   ready: boolean;
   conditions: PodCondition[];
   nodeName: string | null;
@@ -107,13 +116,6 @@ export interface K8sPod {
   creationTimestamp: number;
   scheduledTimestamp?: number;
   startedTimestamp?: number;
-  satisfiesRequestId?: string;
-  laneIndex?: number;
-  ownerReferences?: {
-    kind: string;
-    name: string;
-    uid: string;
-  }[];
 }
 
 export type ControlPlaneStep = 
@@ -141,7 +143,10 @@ export interface ClusterEvent {
   details?: string;
 }
 
-export interface ClusterState {
+/**
+ * Authoritative Kubernetes Cluster State Domain
+ */
+export interface KubernetesClusterState {
   clusterName: string;
   namespace: string;
   containerRuntime: 'containerd' | 'cri-o';
@@ -149,11 +154,9 @@ export interface ClusterState {
   nodes: K8sNode[];
   pods: K8sPod[];
   events: ClusterEvent[];
-  health: number; // 0 - 100%
-  score: number;
-  slaStreak: number;
-  maxSlaStreak: number;
-  requestsCompleted: number;
-  requestsFailed: number;
-  hintsUsedCount: number;
 }
+
+/**
+ * Legacy compatibility alias for ClusterState
+ */
+export type ClusterState = KubernetesClusterState;

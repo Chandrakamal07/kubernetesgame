@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/k8s-defense/game/internal/api"
-	"github.com/k8s-defense/game/internal/simulator"
 )
 
 func main() {
@@ -15,24 +14,17 @@ func main() {
 		port = "8080"
 	}
 
-	namespace := os.Getenv("CLUSTER_NAMESPACE")
-	if namespace == "" {
-		namespace = "chapter1-level1"
-	}
-
-	engine := simulator.NewClusterEngine(namespace)
-	handler := api.NewAPIHandler(engine)
-
+	handler := api.NewAPIHandler()
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", handler.HandleHealth)
-	mux.HandleFunc("GET /api/cluster/state", handler.HandleClusterState)
-	mux.HandleFunc("GET /api/events/stream", handler.HandleSSEEvents)
 
-	// Serve static built frontend files if present
+	// Probes for Kubernetes / OpenShift
+	mux.HandleFunc("GET /healthz", handler.HandleHealth)
+
+	// Serve static built SPA frontend
 	fs := http.FileServer(http.Dir("./frontend/dist"))
 	mux.Handle("/", fs)
 
-	log.Printf("[Kubernetes Defense] API Server listening on port :%s (Namespace: %s)", port, namespace)
+	log.Printf("[Kubernetes Defense] Stateless Web & API Server listening on port :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

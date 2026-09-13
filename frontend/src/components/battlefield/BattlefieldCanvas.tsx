@@ -7,16 +7,35 @@ import { soundEngine } from '../../engine/AudioEngine';
 
 export const BattlefieldCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { cluster, activeRequest, isPaused, actions } = useGameStore();
+  const { cluster, activeMission, isPaused, isReducedMotion, mode, actions } = useGameStore();
 
   const entityManagerRef = useRef<EntityManager>(new EntityManager());
   const rendererRef = useRef<CanvasRenderer | null>(null);
   const lastTimeRef = useRef<number>(0);
-  const activeRequestRef = useRef(activeRequest);
+  const activeMissionRef = useRef(activeMission);
+  const modeRef = useRef(mode);
 
   useEffect(() => {
-    activeRequestRef.current = activeRequest;
-  }, [activeRequest]);
+    activeMissionRef.current = activeMission;
+    modeRef.current = mode;
+  }, [activeMission, mode]);
+
+  // Synchronize active mission entity idempotently whenever active mission changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !activeMission) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const laneHeight = (rect.height || 300) / 3;
+    const centerY = (activeMission.lane + 0.5) * laneHeight;
+
+    entityManagerRef.current.ensureMissionEntity(
+      activeMission,
+      rect.width || 800,
+      centerY,
+      mode === 'CHALLENGE'
+    );
+  }, [activeMission, mode]);
 
   useEffect(() => {
     lastTimeRef.current = performance.now();
@@ -43,64 +62,69 @@ export const BattlefieldCanvas: React.FC = () => {
 
     const entityManager = entityManagerRef.current;
 
-    const unsubscribeSpawn = eventBus.on('CUSTOMER_SPAWNED', (req) => {
-      const rect = canvas.getBoundingClientRect();
-      const laneHeight = rect.height / 3;
-      const centerY = (req.lane + 0.5) * laneHeight;
-      entityManager.spawnCustomer(req, rect.width, centerY);
+    const unsubScan = eventBus.on('SCAN_PULSE_REQUESTED', ({ targetType }) => {
+      entityManager.spawnScanPulse(targetType, 90, 30);
     });
 
-    const unsubscribeSatisfying = eventBus.on('REQUEST_SATISFYING', ({ requestId, request, fulfillingNode }) => {
+    const unsubDiag = eventBus.on('DIAGNOSTIC_SCAN_REQUESTED', () => {
+      const rect = canvas.getBoundingClientRect();
+      entityManager.spawnDiagnosticScan('target', 130, rect.height / 2);
+    });
+
+    const unsubScheduled = eventBus.on('POD_SCHEDULED', ({ pod, node }) => {
       const rect = canvas.getBoundingClientRect();
       const laneHeight = rect.height / 3;
+      const nodeIdx = cluster.nodes.findIndex((n) => n.name === node.name);
+      const targetY = (Math.max(0, nodeIdx) + 0.5) * laneHeight;
 
-      // 1. Mark target customer as satisfying in EntityManager (freezes motion and SLA countdown)
-      const targetCustomer = entityManager.customers.find((c) => c.request.id === requestId);
-      if (targetCustomer) {
-        targetCustomer.status = 'satisfying';
-      }
+      entityManager.spawnWorkloadCapsule(pod.name, pod.image, 90, 30, 130, targetY);
+    });
 
-      // 2. Firing origin comes from host fulfilling node
-      const originLane = fulfillingNode ? fulfillingNode.laneIndex : request.lane;
-      const targetLane = request.lane;
+    const unsubReady = eventBus.on('POD_READY', ({ node }) => {
+      const rect = canvas.getBoundingClientRect();
+      const laneHeight = rect.height / 3;
+      const nodeIdx = cluster.nodes.findIndex((n) => n.name === node.name);
+      const targetY = (Math.max(0, nodeIdx) + 0.5) * laneHeight;
+
+      entityManager.spawnServiceShield(node.name, nodeIdx, 130, targetY);
+      soundEngine.playCannonFire();
+    });
+
+    const unsubSatisfied = eventBus.on('MISSION_SATISFIED', ({ missionId, effect, fulfillingNode }) => {
+      const rect = canvas.getBoundingClientRect();
+      const currentMission = activeMissionRef.current;
+      if (!currentMission) return;
+
+      const laneHeight = rect.height / 3;
+      const originLane = fulfillingNode
+        ? Math.max(0, cluster.nodes.findIndex((n) => n.name === fulfillingNode.name))
+        : currentMission.lane;
+      const targetLane = currentMission.lane;
 
       const originCenterY = (originLane + 0.5) * laneHeight;
       const targetCenterY = (targetLane + 0.5) * laneHeight;
-      const cannonX = 200;
-      const targetX = targetCustomer ? targetCustomer.pixelX : rect.width - 120;
 
-      // 3. Aim fulfilling node cannon barrel diagonally toward target
-      const hostNode = cluster.nodes.find((n) => n.laneIndex === originLane) || cluster.nodes[0];
-      if (hostNode) {
-        hostNode.turretAngle = Math.atan2(targetCenterY - originCenterY, targetX - cannonX);
-        hostNode.lastFiredTimestamp = Date.now();
+      if (effect === 'DEPLOY' || modeRef.current === 'CHALLENGE') {
+        entityManager.spawnProjectile(
+          missionId,
+          fulfillingNode?.name || 'worker-1',
+          originLane,
+          targetLane,
+          130,
+          originCenterY,
+          rect.width - 60,
+          targetCenterY
+        );
+      } else if (effect === 'SCAN' || effect === 'VERIFY') {
+        entityManager.spawnScanPulse('nodes', 90, 30);
+        entityManager.spawnFloatingText('VERIFIED!', rect.width - 90, targetCenterY, '#4ADE80');
+      } else if (effect === 'DIAGNOSE') {
+        entityManager.spawnDiagnosticScan('diagnose', 130, targetCenterY);
+        entityManager.spawnFloatingText('DIAGNOSED!', rect.width - 90, targetCenterY, '#FBBF24');
+      } else if (effect === 'CLEANUP') {
+        entityManager.spawnExplosionParticles(130, targetCenterY, '#FB7185', 20);
+        entityManager.spawnFloatingText('CLEANED UP!', rect.width - 90, targetCenterY, '#FB7185');
       }
-
-      // 4. Play cannon sound and emit CANNON_FIRED
-      soundEngine.playCannonFire();
-      eventBus.emit('CANNON_FIRED', {
-        requestId,
-        nodeName: hostNode?.name || 'worker-1',
-        originLane,
-        targetLane,
-      });
-
-      // 5. Spawn projectile traveling diagonally across lanes
-      entityManager.spawnProjectile(
-        requestId,
-        hostNode?.name || 'worker-1',
-        originLane,
-        targetLane,
-        cannonX,
-        originCenterY,
-        targetX,
-        targetCenterY
-      );
-
-      // 6. Reset turret angle after brief firing duration
-      setTimeout(() => {
-        if (hostNode) hostNode.turretAngle = 0;
-      }, 450);
     });
 
     let animId: number;
@@ -111,19 +135,26 @@ export const BattlefieldCanvas: React.FC = () => {
       if (!isPaused) {
         entityManager.update(dt, 160);
 
-        entityManager.customers.forEach((cust) => {
-          if (cust.status === 'reached_node') {
-            entityManager.spawnExplosionParticles(cust.pixelX, cust.pixelY, '#E56A72', 25);
-            entityManager.spawnFloatingText('SLA BREACHED!', cust.pixelX, cust.pixelY - 20, '#E56A72');
-            actions.handleCustomerReachedNode(cust.request);
-            cust.status = 'hit';
+        // Handle challenge mode time expiration
+        entityManager.signals.forEach((sig) => {
+          if (sig.status === 'reached_node') {
+            entityManager.spawnExplosionParticles(sig.pixelX, sig.pixelY, '#FB7185', 20);
+            entityManager.spawnFloatingText('IMPACT REACHED!', sig.pixelX, sig.pixelY - 20, '#FB7185');
+            actions.handleTimeToImpactExpired(sig.mission);
+            sig.status = 'hit';
           }
         });
-        // Retain active and satisfying customers; remove hit / reached_node entities
-        entityManager.customers = entityManager.customers.filter((c) => c.status === 'active' || c.status === 'satisfying');
+        entityManager.signals = entityManager.signals.filter((s) => s.status !== 'hit');
       }
 
-      renderer.render(dt, cluster.nodes, entityManager, activeRequestRef.current?.lane ?? null, isPaused);
+      renderer.render(
+        dt,
+        cluster.nodes,
+        entityManager,
+        activeMissionRef.current?.lane ?? null,
+        isPaused,
+        isReducedMotion
+      );
 
       animId = requestAnimationFrame(loop);
     };
@@ -133,14 +164,42 @@ export const BattlefieldCanvas: React.FC = () => {
     return () => {
       cancelAnimationFrame(animId);
       window.removeEventListener('resize', resize);
-      unsubscribeSpawn();
-      unsubscribeSatisfying();
+      unsubScan();
+      unsubDiag();
+      unsubScheduled();
+      unsubReady();
+      unsubSatisfied();
     };
-  }, [cluster.nodes, isPaused, actions]);
+  }, [cluster.nodes, isPaused, isReducedMotion, actions]);
 
   return (
-    <div data-tutorial="battlefield" className="relative w-full h-full min-h-[300px] bg-[#060810] overflow-hidden select-none">
+    <div
+      data-tutorial="battlefield"
+      className="relative w-full h-full min-h-[280px] bg-[#070B14] overflow-hidden select-none"
+      role="region"
+      aria-label="Kubernetes Cluster Simulation Battlefield"
+    >
       <canvas ref={canvasRef} className="w-full h-full block" />
+
+      {/* Accessible DOM Summary for Screen Readers & Assistive Tech */}
+      <div className="sr-only" aria-live="polite">
+        <h3>Cluster Status Summary</h3>
+        <p>Control Plane: Active and managing namespace {cluster.namespace}.</p>
+        <ul>
+          {cluster.nodes.map((node) => (
+            <li key={node.name}>
+              {node.name}: Status {node.status}, Allocatable CPU {node.cpuAllocatable - node.cpuRequested} cores free of {node.cpuAllocatable},
+              Allocatable RAM {node.memoryAllocatable - node.memoryRequested}Mi free of {node.memoryAllocatable}Mi.
+              Running Pods: {node.pods.length > 0 ? node.pods.join(', ') : 'None'}.
+            </li>
+          ))}
+        </ul>
+        {activeMission && (
+          <p>
+            Current Mission: {activeMission.title}. Goal: {activeMission.goal.plainLanguage}
+          </p>
+        )}
+      </div>
     </div>
   );
 };

@@ -1,9 +1,8 @@
-import type { ScenarioRequest } from '../scenarios/types.ts';
-import { eventBus } from './GameEventBus.ts';
+import type { LessonMission } from '../scenarios/types.ts';
 
-export interface CustomerEntity {
+export interface MissionSignalEntity {
   id: string;
-  request: ScenarioRequest;
+  mission: LessonMission;
   laneIndex: number;
   spawnX: number;
   targetNodeX: number;
@@ -12,10 +11,11 @@ export interface CustomerEntity {
   width: number;
   height: number;
   speed: number;
-  walkCycle: number;
+  pulsePhase: number;
   status: 'active' | 'satisfying' | 'served' | 'reached_node' | 'hit' | 'breached';
-  remainingSlaSeconds: number;
-  totalSlaSeconds: number;
+  remainingTimeToImpact: number;
+  totalTimeToImpact: number;
+  isChallengeMode: boolean;
 }
 
 export interface WorkloadCapsuleEntity {
@@ -33,9 +33,46 @@ export interface WorkloadCapsuleEntity {
   isComplete: boolean;
 }
 
+export interface ScanPulseEntity {
+  id: string;
+  targetType: 'nodes' | 'pods';
+  startX: number;
+  startY: number;
+  progress: number;
+  radius: number;
+  maxRadius: number;
+  alpha: number;
+  color: string;
+  isComplete: boolean;
+}
+
+export interface DiagnosticScanEntity {
+  id: string;
+  targetName: string;
+  x: number;
+  y: number;
+  progress: number;
+  radius: number;
+  maxRadius: number;
+  alpha: number;
+  color: string;
+  isComplete: boolean;
+}
+
+export interface ServiceShieldEntity {
+  id: string;
+  nodeName: string;
+  laneIndex: number;
+  x: number;
+  y: number;
+  radius: number;
+  alpha: number;
+  isComplete: boolean;
+}
+
 export interface ProjectileEntity {
   id: string;
-  requestId: string;
+  missionId: string;
   sourceNodeName: string;
   originLaneIndex: number;
   targetLaneIndex: number;
@@ -46,7 +83,7 @@ export interface ProjectileEntity {
   targetX: number;
   targetY: number;
   progress: number;
-  speed: number; // in pixels per second
+  speed: number;
   radius: number;
   color: string;
   trail: { x: number; y: number; alpha: number }[];
@@ -65,20 +102,6 @@ export interface ParticleEntity {
   maxLife: number;
 }
 
-export interface SchedulerPulseEntity {
-  id: string;
-  startX: number;
-  startY: number;
-  targetX: number;
-  targetY: number;
-  targetNodeName: string;
-  progress: number;
-  status: 'evaluating' | 'matched' | 'rejected';
-  alpha: number;
-  color: string;
-  isComplete: boolean;
-}
-
 export interface FloatingTextEntity {
   id: string;
   text: string;
@@ -91,49 +114,73 @@ export interface FloatingTextEntity {
 }
 
 export class EntityManager {
-  public customers: CustomerEntity[] = [];
+  public signals: MissionSignalEntity[] = [];
   public capsules: WorkloadCapsuleEntity[] = [];
+  public scanPulses: ScanPulseEntity[] = [];
+  public diagnosticScans: DiagnosticScanEntity[] = [];
+  public serviceShields: ServiceShieldEntity[] = [];
   public projectiles: ProjectileEntity[] = [];
   public particles: ParticleEntity[] = [];
-  public pulses: SchedulerPulseEntity[] = [];
   public floatingTexts: FloatingTextEntity[] = [];
 
+  // Compatibility alias for customer entities
+  public get customers(): any[] {
+    return this.signals;
+  }
+
   public clear() {
-    this.customers = [];
+    this.signals = [];
     this.capsules = [];
+    this.scanPulses = [];
+    this.diagnosticScans = [];
+    this.serviceShields = [];
     this.projectiles = [];
     this.particles = [];
-    this.pulses = [];
     this.floatingTexts = [];
   }
 
-  public spawnCustomer(
-    request: ScenarioRequest,
+  /**
+   * Idempotent mission entity synchronizer.
+   * Ensures exactly one visual signal exists for the active mission without duplicating on re-renders.
+   */
+  public ensureMissionEntity(
+    mission: LessonMission,
     canvasWidth: number,
-    laneCenterY: number
-  ): CustomerEntity {
-    const nodeThresholdX = 230; // X coordinate where customer reaches node defense perimeter
-    const spawnX = canvasWidth + 20;
+    laneCenterY: number,
+    isChallengeMode: boolean
+  ): MissionSignalEntity {
+    const existing = this.signals.find((s) => s.mission.id === mission.id);
+    if (existing) {
+      existing.pixelY = laneCenterY;
+      existing.isChallengeMode = isChallengeMode;
+      return existing;
+    }
 
-    const customer: CustomerEntity = {
-      id: `cust-${request.id}-${Date.now()}`,
-      request,
-      laneIndex: request.lane,
+    const nodeThresholdX = 240;
+    const spawnX = Math.max(canvasWidth - 40, nodeThresholdX + 300);
+    const duration = isChallengeMode ? (mission.timeToImpactSeconds || 60) : 999999;
+
+    const signal: MissionSignalEntity = {
+      id: `sig-${mission.id}-${Date.now()}`,
+      mission,
+      laneIndex: mission.lane,
       spawnX,
       targetNodeX: nodeThresholdX,
       pixelX: spawnX,
       pixelY: laneCenterY,
-      width: 58,
-      height: 64,
-      speed: (spawnX - nodeThresholdX) / request.slaTimeSeconds,
-      walkCycle: 0,
+      width: 54,
+      height: 54,
+      speed: (spawnX - nodeThresholdX) / duration,
+      pulsePhase: 0,
       status: 'active',
-      remainingSlaSeconds: request.slaTimeSeconds,
-      totalSlaSeconds: request.slaTimeSeconds,
+      remainingTimeToImpact: duration,
+      totalTimeToImpact: duration,
+      isChallengeMode,
     };
 
-    this.customers.push(customer);
-    return customer;
+    // Replace old signals with current active mission signal
+    this.signals = [signal];
+    return signal;
   }
 
   public spawnWorkloadCapsule(
@@ -145,7 +192,7 @@ export class EntityManager {
     targetY: number
   ): WorkloadCapsuleEntity {
     const capsule: WorkloadCapsuleEntity = {
-      id: `cap-${Date.now()}`,
+      id: `cap-${Date.now()}-${Math.random()}`,
       podName,
       image,
       startX,
@@ -155,19 +202,64 @@ export class EntityManager {
       currentX: startX,
       currentY: startY,
       progress: 0,
-      color: image.includes('redis') ? '#EF4444' : '#06B6D4',
+      color: image.includes('redis') ? '#EF4444' : '#6EA8FE',
       isComplete: false,
     };
     this.capsules.push(capsule);
     return capsule;
   }
 
-  /**
-   * Spawns a laser projectile from a specific fulfilling Node platform (originLaneIndex)
-   * firing across lanes toward target customer coordinates (targetX, targetY).
-   */
+  public spawnScanPulse(targetType: 'nodes' | 'pods', startX: number, startY: number): ScanPulseEntity {
+    const pulse: ScanPulseEntity = {
+      id: `scan-${Date.now()}-${Math.random()}`,
+      targetType,
+      startX,
+      startY,
+      progress: 0,
+      radius: 10,
+      maxRadius: 360,
+      alpha: 1.0,
+      color: '#6EA8FE',
+      isComplete: false,
+    };
+    this.scanPulses.push(pulse);
+    return pulse;
+  }
+
+  public spawnDiagnosticScan(targetName: string, x: number, y: number): DiagnosticScanEntity {
+    const scan: DiagnosticScanEntity = {
+      id: `diag-${Date.now()}-${Math.random()}`,
+      targetName,
+      x,
+      y,
+      progress: 0,
+      radius: 15,
+      maxRadius: 180,
+      alpha: 1.0,
+      color: '#FBBF24',
+      isComplete: false,
+    };
+    this.diagnosticScans.push(scan);
+    return scan;
+  }
+
+  public spawnServiceShield(nodeName: string, laneIndex: number, x: number, y: number): ServiceShieldEntity {
+    const shield: ServiceShieldEntity = {
+      id: `shield-${Date.now()}-${Math.random()}`,
+      nodeName,
+      laneIndex,
+      x,
+      y,
+      radius: 20,
+      alpha: 1.0,
+      isComplete: false,
+    };
+    this.serviceShields.push(shield);
+    return shield;
+  }
+
   public spawnProjectile(
-    requestId: string,
+    missionId: string,
     sourceNodeName: string,
     originLaneIndex: number,
     targetLaneIndex: number,
@@ -178,7 +270,7 @@ export class EntityManager {
   ): ProjectileEntity {
     const projectile: ProjectileEntity = {
       id: `proj-${Date.now()}-${Math.random()}`,
-      requestId,
+      missionId,
       sourceNodeName,
       originLaneIndex,
       targetLaneIndex,
@@ -189,9 +281,9 @@ export class EntityManager {
       targetX,
       targetY,
       progress: 0,
-      speed: 620,
-      radius: 6.5,
-      color: '#00F0FF',
+      speed: 680,
+      radius: 6,
+      color: '#5EEAD4',
       trail: [],
       isComplete: false,
     };
@@ -199,50 +291,25 @@ export class EntityManager {
     return projectile;
   }
 
-  public spawnSchedulerPulse(
-    startX: number,
-    startY: number,
-    targetX: number,
-    targetY: number,
-    targetNodeName: string,
-    isAccepted: boolean
-  ): SchedulerPulseEntity {
-    const pulse: SchedulerPulseEntity = {
-      id: `pulse-${Date.now()}-${Math.random()}`,
-      startX,
-      startY,
-      targetX,
-      targetY,
-      targetNodeName,
-      progress: 0,
-      status: isAccepted ? 'matched' : 'rejected',
-      alpha: 1.0,
-      color: isAccepted ? '#10B981' : '#F59E0B',
-      isComplete: false,
-    };
-    this.pulses.push(pulse);
-    return pulse;
-  }
-
-  public spawnExplosionParticles(x: number, y: number, color = '#00F0FF', count = 28) {
+  public spawnExplosionParticles(x: number, y: number, color = '#6EA8FE', count = 24) {
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = Math.random() * 120 + 30;
+      const speed = Math.random() * 110 + 30;
       this.particles.push({
         x,
         y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        size: Math.random() * 4 + 2,
+        size: Math.random() * 3.5 + 1.5,
         color: i % 2 === 0 ? color : '#FFFFFF',
         alpha: 1,
         life: 0,
-        maxLife: Math.random() * 0.4 + 0.3,
+        maxLife: Math.random() * 0.4 + 0.25,
       });
     }
   }
 
-  public spawnFloatingText(text: string, x: number, y: number, color = '#10B981') {
+  public spawnFloatingText(text: string, x: number, y: number, color = '#4ADE80') {
     this.floatingTexts.push({
       id: `ft-${Date.now()}-${Math.random()}`,
       text,
@@ -256,27 +323,30 @@ export class EntityManager {
   }
 
   public update(dt: number, nodeBaseX: number) {
-    // 1. Update Customers using authoritative single SLA clock
-    for (const c of this.customers) {
-      if (c.status === 'active') {
-        c.remainingSlaSeconds = Math.max(0, c.remainingSlaSeconds - dt);
-        c.walkCycle += dt * 5;
+    // 1. Update Mission Signals (Time to impact active only in Challenge mode)
+    for (const s of this.signals) {
+      s.pulsePhase += dt * 3;
 
-        // Visual position strictly derives from remaining SLA time fraction
-        const progress = Math.min(1, Math.max(0, 1 - c.remainingSlaSeconds / c.totalSlaSeconds));
-        c.pixelX = c.spawnX - progress * (c.spawnX - c.targetNodeX);
+      if (s.status === 'active') {
+        if (s.isChallengeMode) {
+          s.remainingTimeToImpact = Math.max(0, s.remainingTimeToImpact - dt);
+          const progress = Math.min(1, Math.max(0, 1 - s.remainingTimeToImpact / s.totalTimeToImpact));
+          s.pixelX = s.spawnX - progress * (s.spawnX - s.targetNodeX);
 
-        if (c.remainingSlaSeconds <= 0 || c.pixelX <= nodeBaseX + 70) {
-          c.status = 'reached_node';
+          if (s.remainingTimeToImpact <= 0 || s.pixelX <= nodeBaseX + 70) {
+            s.status = 'reached_node';
+          }
+        } else {
+          // In Learn and Practice modes, signal stays stationary at right edge
+          s.pixelX = Math.max(nodeBaseX + 280, s.spawnX);
         }
       }
-      // Note: If c.status === 'satisfying', customer position & SLA are frozen while projectile is in flight!
     }
 
     // 2. Update Workload Capsules
     for (const cap of this.capsules) {
       if (!cap.isComplete) {
-        cap.progress += dt * 1.5;
+        cap.progress += dt * 1.8;
         if (cap.progress >= 1) {
           cap.progress = 1;
           cap.isComplete = true;
@@ -284,8 +354,8 @@ export class EntityManager {
           cap.currentY = cap.targetY;
         } else {
           const t = cap.progress;
-          const cpX = (cap.startX + cap.targetX) / 2 - 40;
-          const cpY = Math.min(cap.startY, cap.targetY) - 50;
+          const cpX = (cap.startX + cap.targetX) / 2 - 30;
+          const cpY = Math.min(cap.startY, cap.targetY) - 40;
           cap.currentX = (1 - t) * (1 - t) * cap.startX + 2 * (1 - t) * t * cpX + t * t * cap.targetX;
           cap.currentY = (1 - t) * (1 - t) * cap.startY + 2 * (1 - t) * t * cpY + t * t * cap.targetY;
         }
@@ -293,11 +363,47 @@ export class EntityManager {
     }
     this.capsules = this.capsules.filter((c) => !c.isComplete);
 
-    // 3. Update Cross-Lane Projectiles
+    // 3. Update Scan Pulses
+    for (const scan of this.scanPulses) {
+      if (!scan.isComplete) {
+        scan.progress += dt * 2.0;
+        scan.radius = scan.progress * scan.maxRadius;
+        scan.alpha = Math.max(0, 1 - scan.progress);
+        if (scan.progress >= 1) {
+          scan.isComplete = true;
+        }
+      }
+    }
+    this.scanPulses = this.scanPulses.filter((s) => !s.isComplete);
+
+    // 4. Update Diagnostic Scans
+    for (const diag of this.diagnosticScans) {
+      if (!diag.isComplete) {
+        diag.progress += dt * 1.8;
+        diag.radius = diag.progress * diag.maxRadius;
+        diag.alpha = Math.max(0, 1 - diag.progress);
+        if (diag.progress >= 1) {
+          diag.isComplete = true;
+        }
+      }
+    }
+    this.diagnosticScans = this.diagnosticScans.filter((d) => !d.isComplete);
+
+    // 5. Update Service Shields
+    for (const shield of this.serviceShields) {
+      shield.alpha -= dt * 1.2;
+      shield.radius += dt * 25;
+      if (shield.alpha <= 0) {
+        shield.isComplete = true;
+      }
+    }
+    this.serviceShields = this.serviceShields.filter((s) => !s.isComplete);
+
+    // 6. Update Projectiles
     for (const p of this.projectiles) {
       if (!p.isComplete) {
         p.trail.push({ x: p.currentX, y: p.currentY, alpha: 0.8 });
-        if (p.trail.length > 8) p.trail.shift();
+        if (p.trail.length > 6) p.trail.shift();
         p.trail.forEach((t) => (t.alpha -= dt * 3));
 
         const totalDist = Math.hypot(p.targetX - p.startX, p.targetY - p.startY) || 1;
@@ -310,22 +416,8 @@ export class EntityManager {
           p.currentY = p.targetY;
           p.isComplete = true;
 
-          // Emit physical impact event
-          eventBus.emit('PROJECTILE_HIT', {
-            requestId: p.requestId,
-            targetX: p.targetX,
-            targetY: p.targetY,
-            sourceNodeName: p.sourceNodeName,
-          });
-
-          this.spawnExplosionParticles(p.targetX, p.targetY, '#4FD1C5', 30);
-          this.spawnFloatingText('REQUEST SERVED!', p.targetX, p.targetY - 44, '#64D98B');
-
-          // Mark customer as served
-          const targetCust = this.customers.find((c) => c.request.id === p.requestId);
-          if (targetCust) {
-            targetCust.status = 'served';
-          }
+          this.spawnExplosionParticles(p.targetX, p.targetY, '#5EEAD4', 24);
+          this.spawnFloatingText('MISSION COMPLETE!', p.targetX, p.targetY - 35, '#4ADE80');
         } else {
           p.currentX = p.startX + (p.targetX - p.startX) * p.progress;
           p.currentY = p.startY + (p.targetY - p.startY) * p.progress;
@@ -333,22 +425,8 @@ export class EntityManager {
       }
     }
     this.projectiles = this.projectiles.filter((p) => !p.isComplete);
-    // Remove served or hit customers only after physical projectile impact has completed
-    this.customers = this.customers.filter((c) => c.status !== 'served' && c.status !== 'hit');
 
-    // 4. Update Scheduler Pulses
-    for (const pulse of this.pulses) {
-      if (!pulse.isComplete) {
-        pulse.progress += dt * 2.2;
-        if (pulse.progress >= 1) {
-          pulse.progress = 1;
-          pulse.isComplete = true;
-        }
-      }
-    }
-    this.pulses = this.pulses.filter((p) => !p.isComplete);
-
-    // 5. Update Particle Explosions
+    // 7. Update Particles
     for (const p of this.particles) {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -357,10 +435,10 @@ export class EntityManager {
     }
     this.particles = this.particles.filter((p) => p.life < p.maxLife);
 
-    // 6. Update Floating HUD Texts
+    // 8. Update Floating Texts
     for (const ft of this.floatingTexts) {
       ft.y += ft.vy * dt;
-      ft.alpha -= dt * 0.8;
+      ft.alpha -= dt * 0.9;
       if (ft.alpha <= 0) {
         ft.isComplete = true;
       }

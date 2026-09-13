@@ -1,8 +1,14 @@
 import { useState, useEffect } from 'react';
 import { ClusterSimulator } from '../simulator/ClusterSimulator.ts';
 import { CommandParser, type CommandResult } from '../simulator/CommandParser.ts';
-import type { ClusterState, K8sNode, K8sPod } from '../simulator/types.ts';
-import type { LevelConfig, RequestStatus, ScenarioRequest } from '../scenarios/types.ts';
+import type { KubernetesClusterState, K8sPod, K8sNode } from '../simulator/types.ts';
+import type {
+  LessonMission,
+  LevelConfig,
+  LearningMode,
+  MissionStatus,
+  PersistedProgressV1,
+} from '../scenarios/types.ts';
 import { chapter01Levels, tutorialLevel, allChapters } from '../scenarios/chapter01.ts';
 import { soundEngine } from '../engine/AudioEngine.ts';
 import { eventBus } from '../engine/GameEventBus.ts';
@@ -19,12 +25,76 @@ export interface TerminalEntry {
 export type ScreenState = 'home' | 'chapter-map' | 'game' | 'level-summary';
 export type PlayState = 
   | 'INTRO'
-  | 'REQUEST_ACTIVE'
-  | 'SCHEDULING'
-  | 'REQUEST_COMPLETED'
+  | 'MISSION_ACTIVE'
+  | 'RESOLVING'
+  | 'MISSION_COMPLETED'
   | 'LEVEL_COMPLETE'
+  | 'FAILED_RETRYABLE'
   | 'GAME_OVER'
   | 'PAUSED';
+
+export type ActiveSidebarTab = 'mission' | 'tracer' | 'glossary';
+
+const STORAGE_KEY = 'k8s_defense_progress_v1';
+
+export function loadPersistedProgress(): PersistedProgressV1 {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return {
+      version: 1,
+      mode: 'LEARN',
+      completedLessonIds: [],
+      bestScores: {},
+      preferences: { muted: false, reducedMotion: false, terminalExpanded: false },
+    };
+  }
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return {
+        version: 1,
+        mode: 'LEARN',
+        completedLessonIds: [],
+        bestScores: {},
+        preferences: { muted: false, reducedMotion: false, terminalExpanded: false },
+      };
+    }
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.version === 1) {
+      return {
+        version: 1,
+        mode: parsed.mode || 'LEARN',
+        completedLessonIds: Array.isArray(parsed.completedLessonIds) ? parsed.completedLessonIds : [],
+        bestScores: parsed.bestScores || {},
+        preferences: {
+          muted: !!parsed.preferences?.muted,
+          reducedMotion: !!parsed.preferences?.reducedMotion,
+          terminalExpanded: !!parsed.preferences?.terminalExpanded,
+        },
+        lastOpenedLessonId: parsed.lastOpenedLessonId,
+      };
+    }
+  } catch (err) {
+    console.warn('Failed to load persisted progress from localStorage:', err);
+  }
+
+  return {
+    version: 1,
+    mode: 'LEARN',
+    completedLessonIds: [],
+    bestScores: {},
+    preferences: { muted: false, reducedMotion: false, terminalExpanded: false },
+  };
+}
+
+export function savePersistedProgress(progress: PersistedProgressV1) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+  } catch (err) {
+    console.warn('Failed to save persisted progress:', err);
+  }
+}
 
 let globalSimulator: ClusterSimulator | null = null;
 let globalParser: CommandParser | null = null;
@@ -32,6 +102,7 @@ let globalParser: CommandParser | null = null;
 export function getGlobalSimulator(): ClusterSimulator {
   if (!globalSimulator) {
     globalSimulator = new ClusterSimulator();
+    globalSimulator.getClock().startBrowserLoop();
   }
   return globalSimulator;
 }
@@ -46,41 +117,56 @@ export function getGlobalParser(): CommandParser {
 export interface GameState {
   screen: ScreenState;
   playState: PlayState;
+  mode: LearningMode;
   chapterId: number;
   levelId: number;
   level: LevelConfig;
-  activeRequestIndex: number;
-  activeRequest: ScenarioRequest | null;
-  activeRequestStatus: RequestStatus;
-  completedRequestIds: Set<string>;
-  cluster: ClusterState;
+  activeMissionIndex: number;
+  activeMission: LessonMission | null;
+  activeMissionStatus: MissionStatus;
+  completedMissionIds: Set<string>;
+  cluster: KubernetesClusterState;
   terminalHistory: TerminalEntry[];
   terminalInputToInsert: string | null;
   currentHintTier: number;
   isHintModalOpen: boolean;
-  isLearningViewOpen: boolean;
-  isRequestPanelOpen: boolean;
   isEventsLogOpen: boolean;
   isPaused: boolean;
   isMuted: boolean;
+  isReducedMotion: boolean;
+  isTerminalExpanded: boolean;
+  activeSidebarTab: ActiveSidebarTab;
+  isSidebarOpen: boolean;
+  score: number;
+  successStreak: number;
+  coreIntegrity: number; // 0 - 100% (fictional shield)
   commandsExecutedCount: number;
   lastCommand: string;
   // Tutorial State
   isTutorialActive: boolean;
   tutorialStep: number;
   isTutorialLevel: boolean;
+  // Legacy aliases
+  activeRequest?: LessonMission | null;
+  activeRequestIndex?: number;
+  activeRequestStatus?: any;
+  isLearningViewOpen?: boolean;
+  isRequestPanelOpen?: boolean;
 }
+
+const initialPersisted = loadPersistedProgress();
 
 let state: GameState = {
   screen: 'home',
   playState: 'INTRO',
+  mode: initialPersisted.mode,
   chapterId: 1,
   levelId: 1,
   level: chapter01Levels[0],
-  activeRequestIndex: 0,
-  activeRequest: chapter01Levels[0].requests[0],
-  activeRequestStatus: 'ACTIVE',
-  completedRequestIds: new Set<string>(),
+  activeMissionIndex: 0,
+  activeMission: chapter01Levels[0].missions[0],
+  activeMissionStatus: 'ACTIVE',
+  completedMissionIds: new Set<string>(initialPersisted.completedLessonIds),
   cluster: getGlobalSimulator().getState(),
   terminalHistory: [
     {
@@ -94,11 +180,16 @@ let state: GameState = {
   terminalInputToInsert: null,
   currentHintTier: 0,
   isHintModalOpen: false,
-  isLearningViewOpen: true,
-  isRequestPanelOpen: true,
   isEventsLogOpen: false,
   isPaused: false,
-  isMuted: false,
+  isMuted: initialPersisted.preferences.muted,
+  isReducedMotion: initialPersisted.preferences.reducedMotion,
+  isTerminalExpanded: initialPersisted.preferences.terminalExpanded,
+  activeSidebarTab: 'mission',
+  isSidebarOpen: true,
+  score: 0,
+  successStreak: 0,
+  coreIntegrity: 100,
   commandsExecutedCount: 0,
   lastCommand: '',
   isTutorialActive: false,
@@ -117,31 +208,63 @@ function updateState(updater: (prev: GameState) => Partial<GameState>) {
   notify();
 }
 
+function persistCurrentProgress() {
+  const current: PersistedProgressV1 = {
+    version: 1,
+    mode: state.mode,
+    completedLessonIds: Array.from(state.completedMissionIds),
+    bestScores: {},
+    preferences: {
+      muted: state.isMuted,
+      reducedMotion: state.isReducedMotion,
+      terminalExpanded: state.isTerminalExpanded,
+    },
+    lastOpenedLessonId: state.activeMission?.id,
+  };
+  savePersistedProgress(current);
+}
+
+export function calculateMissionScore(
+  basePoints: number,
+  mode: LearningMode,
+  uniqueHintTiersUsed: number
+): number {
+  if (mode === 'LEARN') return basePoints;
+  if (mode === 'PRACTICE') {
+    return Math.max(50, basePoints - uniqueHintTiersUsed * 10);
+  }
+  return Math.max(50, basePoints - uniqueHintTiersUsed * 20);
+}
+
 export const gameActions = {
   setScreen(screen: ScreenState) {
     updateState(() => ({ screen }));
+  },
+
+  setMode(mode: LearningMode) {
+    updateState(() => ({ mode }));
+    persistCurrentProgress();
   },
 
   startTutorial() {
     const sim = getGlobalSimulator();
     sim.reset(tutorialLevel.initialNodes, 'tutorial-academy');
 
-    const firstRequest = tutorialLevel.requests[0] || null;
+    const firstMission = tutorialLevel.missions[0] || null;
 
     updateState(() => ({
       screen: 'game',
-      playState: 'REQUEST_ACTIVE',
+      playState: 'MISSION_ACTIVE',
       chapterId: 1,
       levelId: 0,
       level: tutorialLevel,
-      activeRequestIndex: 0,
-      activeRequest: firstRequest,
-      activeRequestStatus: 'ACTIVE',
-      completedRequestIds: new Set<string>(),
+      activeMissionIndex: 0,
+      activeMission: firstMission,
+      activeMissionStatus: 'ACTIVE',
       currentHintTier: 0,
       isHintModalOpen: false,
-      isLearningViewOpen: true,
-      isRequestPanelOpen: true,
+      activeSidebarTab: 'mission',
+      isSidebarOpen: true,
       isPaused: false,
       commandsExecutedCount: 0,
       isTutorialActive: true,
@@ -151,8 +274,8 @@ export const gameActions = {
       terminalHistory: [
         {
           id: `tut-${Date.now()}`,
-          command: `# Connected to Kubernetes Academy Bastion Terminal`,
-          output: `Interactive Kubernetes Defense Guided Tutorial started.\nActive Objective: ${firstRequest ? firstRequest.title : 'None'}`,
+          command: `# Connected to Kubernetes Academy Simulation Terminal`,
+          output: `Interactive Kubernetes Defense Guided Tutorial started.\nActive Mission: ${firstMission ? firstMission.title : 'None'}`,
           success: true,
           timestamp: new Date().toLocaleTimeString(),
         },
@@ -160,34 +283,9 @@ export const gameActions = {
     }));
 
     soundEngine.playAlert();
-    if (firstRequest) {
-      eventBus.emit('CUSTOMER_SPAWNED', firstRequest);
+    if (firstMission) {
+      eventBus.emit('MISSION_ACTIVATED', { mission: firstMission });
     }
-  },
-
-  setTutorialStep(step: number) {
-    soundEngine.playKeyClick();
-    updateState(() => ({ tutorialStep: step }));
-  },
-
-  nextTutorialStep() {
-    soundEngine.playKeyClick();
-    updateState((prev) => ({ tutorialStep: prev.tutorialStep + 1 }));
-  },
-
-  prevTutorialStep() {
-    soundEngine.playKeyClick();
-    updateState((prev) => ({ tutorialStep: Math.max(0, prev.tutorialStep - 1) }));
-  },
-
-  skipTutorial() {
-    soundEngine.playKeyClick();
-    updateState(() => ({ isTutorialActive: false }));
-  },
-
-  finishTutorialAndStartLevel1() {
-    soundEngine.playLevelComplete();
-    gameActions.startLevel(1, 1);
   },
 
   startLevel(chapterId: number, levelId: number) {
@@ -202,21 +300,21 @@ export const gameActions = {
     const sim = getGlobalSimulator();
     sim.reset(level.initialNodes, `chapter${chapterId}-level${levelId}`);
 
-    const firstRequest = level.requests[0] || null;
+    const firstMission = level.missions[0] || null;
 
     updateState(() => ({
       screen: 'game',
-      playState: 'REQUEST_ACTIVE',
+      playState: 'MISSION_ACTIVE',
       chapterId,
       levelId,
       level,
-      activeRequestIndex: 0,
-      activeRequest: firstRequest,
-      activeRequestStatus: 'ACTIVE',
-      completedRequestIds: new Set<string>(),
+      activeMissionIndex: 0,
+      activeMission: firstMission,
+      activeMissionStatus: 'ACTIVE',
       currentHintTier: 0,
       isHintModalOpen: false,
-      isRequestPanelOpen: true,
+      activeSidebarTab: 'mission',
+      isSidebarOpen: true,
       isPaused: false,
       commandsExecutedCount: 0,
       isTutorialActive: false,
@@ -225,8 +323,8 @@ export const gameActions = {
       terminalHistory: [
         {
           id: `lvl-${Date.now()}`,
-          command: `# Connected to Kubernetes Bastion: ${level.title}`,
-          output: `Interactive Kubernetes Defense Terminal active (Kubernetes v1.30.0).\nActive Request: ${firstRequest ? firstRequest.title : 'None'}`,
+          command: `# Connected to Kubernetes Terminal: ${level.title}`,
+          output: `Interactive Kubernetes Defense Terminal active (Kubernetes v1.30.0).\nActive Mission: ${firstMission ? firstMission.title : 'None'}`,
           success: true,
           timestamp: new Date().toLocaleTimeString(),
         },
@@ -234,9 +332,10 @@ export const gameActions = {
     }));
 
     soundEngine.playAlert();
-    if (firstRequest) {
-      eventBus.emit('CUSTOMER_SPAWNED', firstRequest);
+    if (firstMission) {
+      eventBus.emit('MISSION_ACTIVATED', { mission: firstMission });
     }
+    persistCurrentProgress();
   },
 
   executeCommand(rawCmd: string): string {
@@ -272,7 +371,18 @@ export const gameActions = {
       };
     });
 
-    // Evaluate command/observation objectives immediately upon command execution
+    // Trigger visual scan / diagnostic wave effects based on command
+    if (result.success) {
+      if (result.commandType === 'get_nodes' || result.commandType === 'get_nodes_wide') {
+        eventBus.emit('SCAN_PULSE_REQUESTED', { targetType: 'nodes' });
+      } else if (result.commandType === 'get_pods' || result.commandType === 'get_pods_wide') {
+        eventBus.emit('SCAN_PULSE_REQUESTED', { targetType: 'pods' });
+      } else if (result.commandType === 'describe_node' || result.commandType === 'describe_pod') {
+        eventBus.emit('DIAGNOSTIC_SCAN_REQUESTED', { targetName: result.parsedObject?.name || result.parsedObject?.nodeName || '' });
+      }
+    }
+
+    // Evaluate command/observation objectives immediately
     gameActions.evaluateActiveObjective('COMMAND', result);
 
     return result.output;
@@ -280,13 +390,11 @@ export const gameActions = {
 
   /**
    * Event-driven objective evaluator.
-   * Differentiates COMMAND/OBSERVATION satisfaction (immediate upon execution)
-   * from STATE satisfaction (requires workload to be scheduled, running, and Ready).
+   * Differentiates COMMAND/OBSERVATION/INTERACTION satisfaction from STATE satisfaction.
    */
-  evaluateActiveObjective(_trigger: 'COMMAND' | 'CLUSTER_STATE', cmdResult?: CommandResult) {
-    const req = state.activeRequest;
-    // Primary State Guard: Only evaluate if there is an active request in ACTIVE status and not completed
-    if (!req || state.activeRequestStatus !== 'ACTIVE' || state.completedRequestIds.has(req.id)) {
+  evaluateActiveObjective(_trigger: 'COMMAND' | 'CLUSTER_STATE' | 'INTERACTION', cmdResult?: CommandResult) {
+    const mission = state.activeMission;
+    if (!mission || state.activeMissionStatus !== 'ACTIVE' || state.completedMissionIds.has(mission.id)) {
       return;
     }
 
@@ -297,48 +405,56 @@ export const gameActions = {
     let fulfillingPod: K8sPod | null = null;
     let fulfillingNode: K8sNode | null = null;
 
-    const type = req.requirements.type;
+    const rule = mission.completionRule;
 
-    // 1. Inspect Nodes Objective (COMMAND/OBSERVATION)
-    if (type === 'inspect-nodes') {
+    // 0. Interaction / Component discovery
+    if (rule.type === 'inspect-cluster-components' || rule.type === 'concept-review') {
+      if (_trigger === 'INTERACTION') {
+        isSatisfied = true;
+      }
+    }
+    // 1. Inspect Nodes Objective
+    else if (rule.type === 'inspect-nodes') {
       if (cmdResult && (cmdResult.commandType === 'get_nodes' || cmdResult.commandType === 'get_nodes_wide')) {
         isSatisfied = true;
       }
     }
-    // 2. Inspect Pods Wide Objective (COMMAND/OBSERVATION)
-    // CRITICAL: kubectl get pods -o json must NOT satisfy this! Only -o wide satisfies it.
-    else if (type === 'inspect-pods-wide') {
+    // 2. Inspect Pods Objective
+    else if (rule.type === 'inspect-pods') {
+      if (cmdResult && (cmdResult.commandType === 'get_pods' || cmdResult.commandType === 'get_pods_wide')) {
+        isSatisfied = true;
+      }
+    }
+    // 3. Inspect Pods Wide Objective
+    else if (rule.type === 'inspect-pods-wide') {
       if (cmdResult && cmdResult.commandType === 'get_pods_wide') {
         isSatisfied = true;
       }
     }
-    // 3. Describe Node Objective (COMMAND/OBSERVATION)
-    else if (type === 'describe-node') {
+    // 4. Describe Node Objective
+    else if (rule.type === 'describe-node') {
       if (cmdResult && cmdResult.commandType === 'describe_node') {
-        if (!req.requirements.nodeName || cmdResult.parsedObject?.nodeName === req.requirements.nodeName) {
+        if (!rule.nodeName || cmdResult.parsedObject?.nodeName === rule.nodeName) {
           isSatisfied = true;
         }
       }
     }
-    // 4. Describe Pod Objective (COMMAND/OBSERVATION)
-    else if (type === 'describe-pod') {
+    // 5. Describe Pod Objective
+    else if (rule.type === 'describe-pod') {
       if (cmdResult && cmdResult.commandType === 'describe_pod') {
-        if (!req.requirements.podName || cmdResult.parsedObject?.name === req.requirements.podName) {
+        if (!rule.podName || cmdResult.parsedObject?.name === rule.podName) {
           isSatisfied = true;
         }
       }
     }
-    // 5. Create Pod Objective (STATE)
-    // CRITICAL: Must check actual cluster state. Creating object in etcd is NOT enough.
-    // Pod must be bound to a node, phase === Running, and ready === true.
-    else if (type === 'create-pod') {
+    // 6. Create Pod Objective (STATE)
+    else if (rule.type === 'create-pod') {
       const targetPod = cluster.pods.find((p) => {
-        const nameMatches = p.name === req.requirements.podName;
-        const imageMatches = req.requirements.image ? matchesRequiredImage(p.normalizedImage, req.requirements.image) : true;
-        const cpuFits = !req.requirements.minCpu || (p.resources.requests?.cpu ?? 0) >= req.requirements.minCpu;
-        const memFits = !req.requirements.minMem || (p.resources.requests?.memory ?? 0) >= req.requirements.minMem;
-        
-        const isReady = req.requirements.requireReady !== false ? (p.phase === 'Running' && p.ready === true) : true;
+        const nameMatches = p.name === rule.podName;
+        const imageMatches = rule.image ? matchesRequiredImage(p.normalizedImage, rule.image) : true;
+        const cpuFits = !rule.minCpu || (p.resources.requests?.cpu ?? 0) >= rule.minCpu;
+        const memFits = !rule.minMem || (p.resources.requests?.memory ?? 0) >= rule.minMem;
+        const isReady = rule.requireReady !== false ? (p.phase === 'Running' && p.ready === true) : true;
 
         return nameMatches && imageMatches && cpuFits && memFits && isReady;
       });
@@ -349,11 +465,10 @@ export const gameActions = {
         fulfillingNode = cluster.nodes.find((n) => n.name === targetPod.nodeName) || null;
       }
     }
-    // 6. Failed Scheduling Objective (STATE)
-    // Pod exists, but is in Pending phase with FailedScheduling condition
-    else if (type === 'failed-scheduling') {
+    // 7. Failed Scheduling Objective (STATE)
+    else if (rule.type === 'failed-scheduling') {
       const pendingPod = cluster.pods.find((p) => {
-        const nameMatches = p.name === req.requirements.podName;
+        const nameMatches = p.name === rule.podName;
         const isPending = p.phase === 'Pending';
         const hasFailedSched = p.conditions.some(
           (c) => c.type === 'PodScheduled' && c.status === 'False' && c.reason === 'FailedScheduling'
@@ -367,141 +482,158 @@ export const gameActions = {
         fulfillingNode = cluster.nodes[0] || null;
       }
     }
-    // 7. Delete Pod Objective (STATE)
-    // Pod is removed from cluster state
-    else if (type === 'delete-pod') {
-      const podStillExists = cluster.pods.some((p) => p.name === req.requirements.podName);
+    // 8. Delete Pod Objective (STATE)
+    else if (rule.type === 'delete-pod') {
+      const podStillExists = cluster.pods.some((p) => p.name === rule.podName);
       if (!podStillExists && cmdResult?.commandType === 'delete_pod') {
         isSatisfied = true;
       }
     }
 
     if (isSatisfied) {
-      gameActions.beginSatisfyingRequest(req, fulfillingPod, fulfillingNode);
+      gameActions.beginResolvingMission(mission, fulfillingPod, fulfillingNode);
     }
   },
 
-  /**
-   * Transitions active request atomically: ACTIVE -> SATISFYING.
-   * Emits REQUEST_SATISFYING so Battlefield cannon aims and fires toward the customer entity.
-   * Customer stops moving and freezes SLA timer.
-   */
-  beginSatisfyingRequest(req: ScenarioRequest, fulfillingPod: K8sPod | null, fulfillingNode: K8sNode | null) {
-    if (state.activeRequestStatus !== 'ACTIVE' || state.completedRequestIds.has(req.id)) {
+  beginResolvingMission(mission: LessonMission, fulfillingPod: K8sPod | null, fulfillingNode: K8sNode | null) {
+    if (state.activeMissionStatus !== 'ACTIVE' || state.completedMissionIds.has(mission.id)) {
       return;
     }
 
-    // Atomically lock request into SATISFYING state to prevent double execution
     updateState(() => ({
-      activeRequestStatus: 'SATISFYING',
+      activeMissionStatus: 'RESOLVING',
+      playState: 'RESOLVING',
     }));
 
-    const node = fulfillingNode || state.cluster.nodes.find((n) => n.laneIndex === req.lane) || state.cluster.nodes[0] || null;
-
-    eventBus.emit('REQUEST_SATISFYING', {
-      requestId: req.id,
-      request: req,
+    eventBus.emit('MISSION_SATISFIED', {
+      missionId: mission.id,
+      effect: mission.gameEffect,
       fulfillingPod,
-      fulfillingNode: node,
-    });
-  },
-
-  /**
-   * Finalizes request when the projectile physically reaches the customer entity.
-   * Transitions SATISFYING -> SERVED.
-   * Grants XP and increments SLA streak EXACTLY ONCE.
-   */
-  finalizeServedRequest(requestId: string) {
-    const req = state.activeRequest;
-    if (!req || req.id !== requestId || state.activeRequestStatus !== 'SATISFYING' || state.completedRequestIds.has(requestId)) {
-      return;
-    }
-
-    const newCompleted = new Set(state.completedRequestIds);
-    newCompleted.add(requestId);
-
-    const sim = getGlobalSimulator();
-    const hintPenalty = state.currentHintTier === 0 ? 50 : state.currentHintTier === 1 ? 0 : state.currentHintTier === 2 ? -5 : state.currentHintTier === 3 ? -10 : -20;
-    const pointsAwarded = Math.max(50, req.rewardPoints + hintPenalty);
-
-    // Update score and SLA streak in cluster state EXACTLY ONCE
-    sim.updateScore(pointsAwarded, true);
-    soundEngine.playImpact();
-
-    updateState(() => ({
-      activeRequestStatus: 'SERVED',
-      completedRequestIds: newCompleted,
-      playState: 'REQUEST_COMPLETED',
-    }));
-
-    eventBus.emit('REQUEST_SERVED', {
-      requestId: req.id,
-      points: pointsAwarded,
-      request: req,
-    });
-    eventBus.emit('XP_AWARDED', {
-      points: pointsAwarded,
-      totalScore: sim.getState().score,
+      fulfillingNode,
     });
 
-    // Advance to next request after 600ms result feedback delay
+    // Finalize mission resolution
     setTimeout(() => {
-      const nextIdx = state.activeRequestIndex + 1;
-      if (nextIdx < state.level.requests.length) {
-        const nextReq = state.level.requests[nextIdx];
-        updateState(() => ({
-          activeRequestIndex: nextIdx,
-          activeRequest: nextReq,
-          activeRequestStatus: 'ACTIVE',
-          currentHintTier: 0,
-          playState: 'REQUEST_ACTIVE',
-        }));
-
-        soundEngine.playAlert();
-        eventBus.emit('CUSTOMER_SPAWNED', nextReq);
-      } else {
-        updateState(() => ({
-          playState: 'LEVEL_COMPLETE',
-        }));
-        soundEngine.playLevelComplete();
-        eventBus.emit('LEVEL_COMPLETED', state.level);
-      }
-    }, 600);
+      gameActions.finalizeMission(mission.id);
+    }, 450);
   },
 
-  handleCustomerReachedNode(customerReq: ScenarioRequest) {
-    if (state.activeRequestStatus !== 'ACTIVE' || state.activeRequest?.id !== customerReq.id) {
+  finalizeMission(missionId: string) {
+    const mission = state.activeMission;
+    if (!mission || mission.id !== missionId || state.completedMissionIds.has(missionId)) {
       return;
     }
 
+    const newCompleted = new Set(state.completedMissionIds);
+    newCompleted.add(missionId);
+
+    const pointsAwarded = calculateMissionScore(mission.basePoints, state.mode, state.currentHintTier);
+    const newScore = state.score + pointsAwarded;
+    const newStreak = state.successStreak + 1;
+
+    soundEngine.playLevelComplete();
+
     updateState(() => ({
-      activeRequestStatus: 'BREACHED',
+      activeMissionStatus: 'COMPLETED',
+      completedMissionIds: newCompleted,
+      playState: 'MISSION_COMPLETED',
+      score: newScore,
+      successStreak: newStreak,
     }));
 
-    const sim = getGlobalSimulator();
-    sim.damageNode(customerReq.lane, 25);
-    sim.updateScore(0, false);
+    eventBus.emit('MISSION_COMPLETED', {
+      missionId: mission.id,
+      points: pointsAwarded,
+      mission,
+    });
+
+    persistCurrentProgress();
+  },
+
+  advanceToNextMission() {
+    const nextIdx = state.activeMissionIndex + 1;
+    if (nextIdx < state.level.missions.length) {
+      const nextMission = state.level.missions[nextIdx];
+      updateState(() => ({
+        activeMissionIndex: nextIdx,
+        activeMission: nextMission,
+        activeMissionStatus: 'ACTIVE',
+        currentHintTier: 0,
+        playState: 'MISSION_ACTIVE',
+      }));
+
+      soundEngine.playAlert();
+      eventBus.emit('MISSION_ACTIVATED', { mission: nextMission });
+    } else {
+      updateState(() => ({
+        playState: 'LEVEL_COMPLETE',
+      }));
+      soundEngine.playLevelComplete();
+      eventBus.emit('LEVEL_COMPLETED', { level: state.level });
+    }
+    persistCurrentProgress();
+  },
+
+  retryMission() {
+    const mission = state.activeMission;
+    if (!mission) return;
+
+    updateState(() => ({
+      activeMissionStatus: 'ACTIVE',
+      playState: 'MISSION_ACTIVE',
+      currentHintTier: 0,
+    }));
+
+    soundEngine.playAlert();
+    eventBus.emit('MISSION_ACTIVATED', { mission });
+  },
+
+  handleTimeToImpactExpired(mission: LessonMission) {
+    if (state.mode !== 'CHALLENGE' || state.activeMissionStatus !== 'ACTIVE' || state.activeMission?.id !== mission.id) {
+      return;
+    }
+
+    const newIntegrity = Math.max(0, state.coreIntegrity - 25);
     soundEngine.playDamage();
 
-    eventBus.emit('REQUEST_BREACHED', { requestId: customerReq.id, lane: customerReq.lane });
-    eventBus.emit('NODE_DAMAGED', { laneIndex: customerReq.lane, health: sim.getState().health });
+    updateState(() => ({
+      activeMissionStatus: 'FAILED_RETRYABLE',
+      playState: 'FAILED_RETRYABLE',
+      coreIntegrity: newIntegrity,
+      successStreak: 0,
+    }));
 
-    if (sim.getState().health <= 0) {
+    eventBus.emit('MISSION_FAILED', {
+      missionId: mission.id,
+      reason: 'Time to impact expired before workload was ready.',
+    });
+    eventBus.emit('CORE_INTEGRITY_CHANGED', { coreIntegrity: newIntegrity });
+
+    if (newIntegrity <= 0) {
       updateState(() => ({ playState: 'GAME_OVER' }));
-      eventBus.emit('GAME_OVER');
+      eventBus.emit('GAME_OVER', { reason: 'Core integrity depleted.' });
     }
+  },
+
+  resetAllProgress() {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+
+    updateState(() => ({
+      completedMissionIds: new Set<string>(),
+      score: 0,
+      successStreak: 0,
+      coreIntegrity: 100,
+      mode: 'LEARN',
+    }));
+
+    soundEngine.playKeyClick();
   },
 
   unlockNextHint() {
     if (state.currentHintTier < 4) {
-      const deductions = [0, 0, 5, 10, 20];
-      const nextTier = state.currentHintTier + 1;
-      const penalty = deductions[nextTier] || 0;
-
-      const sim = getGlobalSimulator();
-      sim.recordHintUsed(penalty);
-
-      updateState(() => ({ currentHintTier: nextTier }));
+      updateState((prev) => ({ currentHintTier: prev.currentHintTier + 1 }));
     }
   },
 
@@ -513,12 +645,12 @@ export const gameActions = {
     updateState(() => ({ isHintModalOpen: false }));
   },
 
-  toggleLearningView() {
-    updateState((prev) => ({ isLearningViewOpen: !prev.isLearningViewOpen }));
+  setActiveSidebarTab(tab: ActiveSidebarTab) {
+    updateState(() => ({ activeSidebarTab: tab, isSidebarOpen: true }));
   },
 
-  toggleRequestPanel() {
-    updateState((prev) => ({ isRequestPanelOpen: !prev.isRequestPanelOpen }));
+  toggleSidebar() {
+    updateState((prev) => ({ isSidebarOpen: !prev.isSidebarOpen }));
   },
 
   toggleEventsLog() {
@@ -526,49 +658,83 @@ export const gameActions = {
   },
 
   togglePause() {
-    updateState((prev) => ({ isPaused: !prev.isPaused }));
+    const nextPaused = !state.isPaused;
+    getGlobalSimulator().getClock().setPaused(nextPaused);
+    updateState(() => ({ isPaused: nextPaused }));
   },
 
   toggleMute() {
     const nextMute = !state.isMuted;
     soundEngine.setMuted(nextMute);
     updateState(() => ({ isMuted: nextMute }));
+    persistCurrentProgress();
+  },
+
+  toggleReducedMotion() {
+    const nextVal = !state.isReducedMotion;
+    updateState(() => ({ isReducedMotion: nextVal }));
+    persistCurrentProgress();
+  },
+
+  toggleTerminalExpanded() {
+    updateState((prev) => ({ isTerminalExpanded: !prev.isTerminalExpanded }));
+    persistCurrentProgress();
   },
 
   insertTerminalInput(command: string) {
     updateState(() => ({ terminalInputToInsert: command }));
-    eventBus.emit('INSERT_TERMINAL_INPUT', command);
+    eventBus.emit('INSERT_TERMINAL_INPUT', { command });
   },
 
   clearTerminalInputInsert() {
     updateState(() => ({ terminalInputToInsert: null }));
   },
+
+  setTutorialStep(step: number) {
+    soundEngine.playKeyClick();
+    updateState(() => ({ tutorialStep: step }));
+  },
+
+  nextTutorialStep() {
+    soundEngine.playKeyClick();
+    updateState((prev) => ({ tutorialStep: prev.tutorialStep + 1 }));
+  },
+
+  prevTutorialStep() {
+    soundEngine.playKeyClick();
+    updateState((prev) => ({ tutorialStep: Math.max(0, prev.tutorialStep - 1) }));
+  },
+
+  skipTutorial() {
+    soundEngine.playKeyClick();
+    updateState(() => ({ isTutorialActive: false }));
+  },
+
+  finishTutorialAndStartLevel1() {
+    soundEngine.playLevelComplete();
+    gameActions.startLevel(1, 1);
+  },
 };
 
-// Subscribe simulator state changes to global store and trigger event-driven objective evaluation
+// Subscribe simulator state changes to global store
 getGlobalSimulator().subscribe((clusterState) => {
   updateState(() => ({ cluster: clusterState }));
-  // Event-driven evaluation when cluster state changes (e.g. pod reaches Ready, pod deleted)
-  if (state.playState === 'REQUEST_ACTIVE' && state.activeRequestStatus === 'ACTIVE') {
+  if (state.playState === 'MISSION_ACTIVE' && state.activeMissionStatus === 'ACTIVE') {
     gameActions.evaluateActiveObjective('CLUSTER_STATE');
   }
 });
 
 // Subscribe to domain event bus
 eventBus.on('POD_READY', () => {
-  if (state.playState === 'REQUEST_ACTIVE' && state.activeRequestStatus === 'ACTIVE') {
+  if (state.playState === 'MISSION_ACTIVE' && state.activeMissionStatus === 'ACTIVE') {
     gameActions.evaluateActiveObjective('CLUSTER_STATE');
   }
 });
 
 eventBus.on('POD_DELETED', () => {
-  if (state.playState === 'REQUEST_ACTIVE' && state.activeRequestStatus === 'ACTIVE') {
+  if (state.playState === 'MISSION_ACTIVE' && state.activeMissionStatus === 'ACTIVE') {
     gameActions.evaluateActiveObjective('CLUSTER_STATE');
   }
-});
-
-eventBus.on('PROJECTILE_HIT', ({ requestId }) => {
-  gameActions.finalizeServedRequest(requestId);
 });
 
 export function useGameStore() {
@@ -584,6 +750,12 @@ export function useGameStore() {
 
   return {
     ...storeState,
+    // Provide compatibility aliases
+    activeRequest: storeState.activeMission,
+    activeRequestIndex: storeState.activeMissionIndex,
+    activeRequestStatus: storeState.activeMissionStatus,
+    isLearningViewOpen: storeState.isSidebarOpen && storeState.activeSidebarTab === 'tracer',
+    isRequestPanelOpen: storeState.isSidebarOpen && storeState.activeSidebarTab === 'mission',
     actions: gameActions,
   };
 }

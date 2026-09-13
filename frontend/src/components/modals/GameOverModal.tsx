@@ -1,51 +1,55 @@
 import React from 'react';
 import { useGameStore } from '../../state/useGameStore';
-import { AlertOctagon, RotateCcw, Layers } from 'lucide-react';
+import { AlertTriangle, RotateCcw, Map } from 'lucide-react';
 
 export const GameOverModal: React.FC = () => {
-  const { playState, level, actions } = useGameStore();
+  const { playState, score, actions } = useGameStore();
 
   if (playState !== 'GAME_OVER') return null;
 
   return (
-    <div className="fixed inset-0 bg-[#050711]/90 backdrop-blur-md flex items-center justify-center p-4 z-50 select-none animate-in zoom-in-95 duration-200">
-      <div className="w-full max-w-md bg-[#0D1220] border border-[#F06D78]/45 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.7),0_0_30px_rgba(240,109,120,0.18)] p-6 text-center">
-        <div className="w-14 h-14 rounded-full bg-[#F06D78]/15 border border-[#F06D78]/35 flex items-center justify-center mx-auto text-[#F06D78] mb-3 shadow-lg shadow-[#F06D78]/20">
-          <AlertOctagon size={28} />
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+      <div className="bg-[#0E1625] border border-[rgba(251,113,133,0.4)] rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl text-[#F8FAFC] text-center">
+        <div className="w-16 h-16 rounded-2xl bg-[#FB7185]/15 border border-[#FB7185]/40 flex items-center justify-center mx-auto text-[#FB7185] shadow-lg">
+          <AlertTriangle className="w-8 h-8" />
         </div>
 
-        <span className="px-3 py-0.5 rounded-full bg-[#F06D78]/15 text-[#F06D78] font-mono font-bold text-xs border border-[#F06D78]/35 uppercase tracking-wider">
-          CLUSTER CORE OFFLINE
-        </span>
-        <h2 className="text-xl font-bold text-[#F7F9FF] mt-2 font-sans">SLA Breached — Cluster Overrun</h2>
-        <p className="text-xs text-[#C6CDDB] mt-2 leading-relaxed font-sans">
-          Customer requests reached worker nodes before container workloads were scheduled and initialized.
-        </p>
-
-        <div className="mt-4 p-3 bg-[#080B17] rounded-xl border border-[rgba(132,156,205,0.16)] text-left font-mono text-xs text-[#C6CDDB] space-y-1.5">
-          <div className="text-[10px] text-[#F2B95F] font-bold uppercase">Incident Post-Mortem:</div>
-          <div>• Ensure pods are created with matching names and images.</div>
-          <div>• Use <span className="text-[#6594FF] font-semibold">kubectl get nodes</span> to verify node status.</div>
-          <div>• Use <span className="text-[#F2B95F] font-semibold">HINT</span> if you need syntax clarification!</div>
+        <div>
+          <span className="text-xs font-mono font-bold text-[#FB7185] uppercase tracking-wider">
+            Challenge Terminated
+          </span>
+          <h2 className="text-2xl font-bold text-[#F8FAFC] mt-1">
+            Core Integrity Depleted
+          </h2>
+          <p className="text-xs text-[#8190A7] mt-1">
+            In Challenge Mode, unhandled workloads breach cluster integrity. Review the concept and try again!
+          </p>
         </div>
 
-        <div className="flex items-center justify-center gap-3 mt-6 pt-4 border-t border-[rgba(132,156,205,0.16)]">
+        <div className="bg-[#151F31] p-4 rounded-xl border border-[rgba(148,163,184,0.1)] space-y-2 text-left text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-[#8190A7]">Score Achieved:</span>
+            <span className="font-mono font-bold text-[#FBBF24]">{score} pts</span>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 pt-2">
           <button
             onClick={() => actions.setScreen('chapter-map')}
-            className="px-4 py-2 rounded-lg bg-[#11182A] hover:bg-[#1B2640] text-[#C6CDDB] hover:text-[#F7F9FF] text-xs font-mono font-semibold transition-colors flex items-center gap-1.5 border border-[rgba(132,156,205,0.16)] cursor-pointer"
+            className="w-full btn-secondary text-xs h-10 font-semibold"
           >
-            <Layers size={13} />
-            <span>CHAPTER MAP</span>
+            <Map className="w-4 h-4" /> Chapter Map
           </button>
           <button
-            onClick={() => actions.startLevel(level.chapterId, level.id)}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#D9383A] to-[#F06D78] hover:filter hover:brightness-110 text-white text-xs font-mono font-bold transition-all shadow-lg shadow-[#F06D78]/25 flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+            onClick={() => actions.startLevel(1, 1)}
+            className="w-full btn-primary text-xs h-10 font-bold bg-[#FB7185] hover:bg-[#FB7185]/90"
           >
-            <RotateCcw size={13} />
-            <span>RETRY MISSION</span>
+            <RotateCcw className="w-4 h-4" /> Try Again
           </button>
         </div>
       </div>
     </div>
   );
 };
+
+export default GameOverModal;

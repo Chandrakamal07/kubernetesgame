@@ -1,518 +1,312 @@
-import type { EntityManager, CustomerEntity, ProjectileEntity } from './EntityManager';
-import type { K8sNode } from '../simulator/types';
+import type { K8sNode } from '../simulator/types.ts';
+import type { EntityManager } from './EntityManager.ts';
+import { formatCpu, formatMemory } from '../simulator/imageUtils.ts';
 
 export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D;
-  private width: number = 0;
-  private height: number = 0;
-  private animTime: number = 0;
+  private width: number = 800;
+  private height: number = 500;
+  private gridOffset: number = 0;
 
   constructor(ctx: CanvasRenderingContext2D) {
     this.ctx = ctx;
   }
 
-  public setDimensions(w: number, h: number) {
-    this.width = w;
-    this.height = h;
+  public setDimensions(width: number, height: number) {
+    this.width = width;
+    this.height = height;
   }
 
   public render(
     dt: number,
     nodes: K8sNode[],
-    entities: EntityManager,
-    selectedLane: number | null = null,
-    isPaused = false
+    entityManager: EntityManager,
+    activeLaneIndex: number | null,
+    isPaused: boolean,
+    reducedMotion: boolean = false
   ) {
-    if (!isPaused) {
-      this.animTime += dt;
-    }
-
     const ctx = this.ctx;
     const w = this.width;
     const h = this.height;
 
-    ctx.clearRect(0, 0, w, h);
-
-    // 1. Draw Rich Deep Datacenter Grid
-    this.drawBackground(ctx, w, h);
-
-    // 2. Draw 3 Strategic Lanes
-    const laneHeight = h / 3;
-    for (let i = 0; i < 3; i++) {
-      this.drawLane(ctx, i, laneHeight, w, selectedLane === i);
+    if (!reducedMotion && !isPaused) {
+      this.gridOffset = (this.gridOffset + dt * 15) % 32;
     }
 
-    // 3. Draw Cluster Control Plane Base Pillar (Leftmost)
-    this.drawControlPlaneBase(ctx, h);
+    // 1. Clear background
+    ctx.fillStyle = '#070B14';
+    ctx.fillRect(0, 0, w, h);
 
-    // 4. Draw Worker Node Platforms & Defense Cannons
-    nodes.forEach((node) => {
-      const centerY = (node.laneIndex + 0.5) * laneHeight;
-      this.drawWorkerNode(ctx, node, 160, centerY);
+    // 2. Subtle grid
+    this.renderGrid(ctx, w, h);
+
+    // 3. Render 3 Mission Lanes
+    const laneHeight = h / 3;
+    for (let i = 0; i < 3; i++) {
+      const y = i * laneHeight;
+      const isActive = activeLaneIndex === i;
+
+      ctx.fillStyle = isActive ? 'rgba(110, 168, 254, 0.04)' : 'rgba(14, 22, 37, 0.35)';
+      ctx.fillRect(0, y + 2, w, laneHeight - 4);
+
+      ctx.strokeStyle = isActive ? 'rgba(110, 168, 254, 0.18)' : 'rgba(148, 163, 184, 0.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+
+      // Lane badge
+      ctx.fillStyle = isActive ? 'rgba(110, 168, 254, 0.65)' : 'rgba(129, 144, 167, 0.35)';
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.fillText(`PATH-${i + 1}`, 12, y + 18);
+    }
+
+    // 4. Render Control Plane Hub
+    this.renderControlPlaneHub(ctx);
+
+    // 5. Render Worker Nodes
+    const nodeBaseX = 50;
+    nodes.forEach((node, idx) => {
+      const laneY = (idx + 0.5) * laneHeight;
+      this.renderWorkerNode(ctx, node, nodeBaseX, laneY);
     });
 
-    // 5. Draw Scheduler Pulses
-    entities.pulses.forEach((pulse) => {
-      this.drawSchedulerPulse(ctx, pulse);
+    // 6. Render Scan Pulses
+    entityManager.scanPulses.forEach((scan) => {
+      ctx.strokeStyle = `rgba(110, 168, 254, ${scan.alpha * 0.75})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(scan.startX, scan.startY, scan.radius, 0, Math.PI * 2);
+      ctx.stroke();
     });
 
-    // 6. Draw Workload Capsules in flight
-    entities.capsules.forEach((cap) => {
-      this.drawWorkloadCapsule(ctx, cap);
+    // 7. Render Diagnostic Scans
+    entityManager.diagnosticScans.forEach((diag) => {
+      ctx.strokeStyle = `rgba(251, 191, 36, ${diag.alpha * 0.85})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(diag.x, diag.y, diag.radius, 0, Math.PI * 2);
+      ctx.stroke();
     });
 
-    // 7. Draw Projectile Lasers (with cross-lane rotation)
-    entities.projectiles.forEach((proj) => {
-      this.drawProjectile(ctx, proj);
+    // 8. Render Service Shields
+    entityManager.serviceShields.forEach((shield) => {
+      ctx.fillStyle = `rgba(74, 222, 128, ${shield.alpha * 0.25})`;
+      ctx.strokeStyle = `rgba(74, 222, 128, ${shield.alpha * 0.8})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(shield.x, shield.y, shield.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     });
 
-    // 8. Draw Incoming Customers
-    entities.customers.forEach((cust) => {
-      this.drawCustomer(ctx, cust);
+    // 9. Render Workload Capsules (in-flight scheduling)
+    entityManager.capsules.forEach((cap) => {
+      ctx.fillStyle = cap.color;
+      ctx.shadowColor = cap.color;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(cap.currentX, cap.currentY, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = '#F8FAFC';
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.fillText(cap.podName, cap.currentX + 12, cap.currentY + 4);
     });
 
-    // 9. Draw Particle Explosions
-    entities.particles.forEach((p) => {
-      ctx.save();
-      ctx.globalAlpha = p.alpha;
+    // 10. Render Cross-Lane Projectiles (Challenge mode reward)
+    entityManager.projectiles.forEach((p) => {
+      ctx.strokeStyle = 'rgba(94, 234, 212, 0.4)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(p.startX, p.startY);
+      p.trail.forEach((pt) => ctx.lineTo(pt.x, pt.y));
+      ctx.lineTo(p.currentX, p.currentY);
+      ctx.stroke();
+
       ctx.fillStyle = p.color;
       ctx.shadowColor = p.color;
-      ctx.shadowBlur = 8;
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.arc(p.currentX, p.currentY, p.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
+
+    // 11. Render Mission Signals
+    entityManager.signals.forEach((s) => {
+      this.renderMissionSignal(ctx, s, reducedMotion);
+    });
+
+    // 12. Render Particles
+    entityManager.particles.forEach((p) => {
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.alpha;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
       ctx.fill();
-      ctx.restore();
+      ctx.globalAlpha = 1.0;
     });
 
-    // 10. Draw Floating HUD Texts
-    entities.floatingTexts.forEach((ft) => {
-      ctx.save();
-      ctx.globalAlpha = ft.alpha;
+    // 13. Render Floating Text
+    entityManager.floatingTexts.forEach((ft) => {
       ctx.fillStyle = ft.color;
-      ctx.shadowColor = ft.color;
-      ctx.shadowBlur = 10;
-      ctx.font = 'bold 13px "JetBrains Mono", sans-serif';
-      ctx.textAlign = 'center';
+      ctx.globalAlpha = ft.alpha;
+      ctx.font = 'bold 12px JetBrains Mono, monospace';
       ctx.fillText(ft.text, ft.x, ft.y);
-      ctx.restore();
+      ctx.globalAlpha = 1.0;
     });
   }
 
-  private drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const grad = ctx.createLinearGradient(0, 0, w, h);
-    grad.addColorStop(0, '#050711');
-    grad.addColorStop(0.5, '#080B17');
-    grad.addColorStop(1, '#050711');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.strokeStyle = 'rgba(79, 124, 255, 0.04)';
+  private renderGrid(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    ctx.strokeStyle = 'rgba(21, 31, 49, 0.6)';
     ctx.lineWidth = 1;
+    const step = 32;
 
-    const gridSize = 48;
-    for (let x = 0; x < w; x += gridSize) {
+    for (let x = this.gridOffset; x < w; x += step) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
     }
-
-    for (let y = 0; y < h; y += gridSize) {
+    for (let y = 0; y < h; y += step) {
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       ctx.stroke();
     }
-
-    // Subtle server rack status LEDs on right side
-    ctx.fillStyle = 'rgba(17, 24, 42, 0.3)';
-    for (let rx = w - 160; rx < w; rx += 45) {
-      ctx.fillRect(rx, 12, 30, h - 24);
-      for (let ly = 24; ly < h - 24; ly += 20) {
-        const isBlinking = Math.sin(this.animTime * 2.5 + rx + ly) > 0.4;
-        ctx.fillStyle = isBlinking ? '#4F7CFF' : 'rgba(79, 124, 255, 0.15)';
-        ctx.fillRect(rx + 4, ly, 3, 2.5);
-        ctx.fillStyle = isBlinking ? '#32D5D2' : 'rgba(50, 213, 210, 0.15)';
-        ctx.fillRect(rx + 11, ly, 3, 2.5);
-        ctx.fillStyle = 'rgba(17, 24, 42, 0.3)';
-      }
-    }
-    ctx.restore();
   }
 
-  private drawLane(
-    ctx: CanvasRenderingContext2D,
-    laneIndex: number,
-    laneHeight: number,
-    w: number,
-    isSelected: boolean
-  ) {
-    const yTop = laneIndex * laneHeight;
-    const yBottom = yTop + laneHeight;
+  private renderControlPlaneHub(ctx: CanvasRenderingContext2D) {
+    const hubX = 18;
+    const hubY = 18;
 
-    ctx.save();
-
-    // Lane separator line
-    ctx.strokeStyle = isSelected ? 'rgba(79, 124, 255, 0.4)' : 'rgba(132, 156, 205, 0.08)';
-    ctx.lineWidth = isSelected ? 1.5 : 1;
-    ctx.beginPath();
-    ctx.moveTo(0, yBottom);
-    ctx.lineTo(w, yBottom);
-    ctx.stroke();
-
-    // Animated dashed center track
-    const centerY = yTop + laneHeight / 2;
-    ctx.strokeStyle = isSelected ? 'rgba(79, 124, 255, 0.15)' : 'rgba(132, 156, 205, 0.04)';
-    ctx.setLineDash([6, 18]);
-    ctx.lineDashOffset = -this.animTime * 20;
-    ctx.beginPath();
-    ctx.moveTo(260, centerY);
-    ctx.lineTo(w, centerY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Lane identifier watermark
-    ctx.fillStyle = 'rgba(127, 140, 163, 0.15)';
-    ctx.font = '10px "JetBrains Mono", monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(`LANE 0${laneIndex + 1} // INGRESS`, w - 16, yTop + 18);
-
-    ctx.restore();
-  }
-
-  private drawControlPlaneBase(ctx: CanvasRenderingContext2D, h: number) {
-    ctx.save();
-
-    const baseW = 90;
-    const grad = ctx.createLinearGradient(0, 0, baseW + 20, 0);
-    grad.addColorStop(0, '#080B17');
-    grad.addColorStop(0.85, '#11182A');
-    grad.addColorStop(1, 'rgba(17, 24, 42, 0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, baseW + 20, h);
-
-    // Edge line
-    ctx.strokeStyle = 'rgba(79, 124, 255, 0.35)';
+    ctx.fillStyle = '#0E1625';
+    ctx.strokeStyle = 'rgba(110, 168, 254, 0.4)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(baseW, 0);
-    ctx.lineTo(baseW, h);
+    ctx.roundRect(hubX, hubY, 150, 24, 6);
+    ctx.fill();
     ctx.stroke();
 
-    const coreY = h / 2;
-    const pulseSize = 20 + Math.sin(this.animTime * 3) * 2;
-    
-    // Outer breathing ring
-    ctx.strokeStyle = 'rgba(79, 124, 255, 0.5)';
-    ctx.shadowColor = '#4F7CFF';
-    ctx.shadowBlur = 10;
-    ctx.lineWidth = 1.5;
+    ctx.fillStyle = '#4ADE80';
     ctx.beginPath();
-    ctx.arc(42, coreY, pulseSize, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Central Core Orb
-    ctx.fillStyle = '#4F7CFF';
-    ctx.beginPath();
-    ctx.arc(42, coreY, 13, 0, Math.PI * 2);
+    ctx.arc(hubX + 12, hubY + 12, 4, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = '#F7F9FF';
-    ctx.font = 'bold 9px "JetBrains Mono", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('CONTROL', 42, coreY - 28);
-    ctx.fillText('PLANE', 42, coreY - 18);
-
-    ctx.fillStyle = '#7F8CA3';
-    ctx.font = '8px "JetBrains Mono", monospace';
-    ctx.fillText('API-SERVER', 42, coreY + 28);
-    ctx.fillText('ETCD / SCHED', 42, coreY + 38);
-
-    ctx.restore();
+    ctx.fillStyle = '#6EA8FE';
+    ctx.font = 'bold 10px JetBrains Mono, monospace';
+    ctx.fillText('CONTROL PLANE: ACTIVE', hubX + 22, hubY + 16);
   }
 
-  private drawWorkerNode(
+  private renderWorkerNode(
     ctx: CanvasRenderingContext2D,
     node: K8sNode,
-    x: number,
-    y: number
+    baseX: number,
+    centerY: number
   ) {
-    ctx.save();
+    const cardW = 160;
+    const cardH = 92;
+    const x = baseX;
+    const y = centerY - cardH / 2;
 
-    const isReady = node.status === 'Ready';
-    const isCharging = node.isCharging;
-    const healthFrac = node.health / 100;
-
-    // Platform Base Chassis
-    ctx.fillStyle = '#11182A';
-    ctx.strokeStyle = isReady ? 'rgba(79, 124, 255, 0.45)' : 'rgba(240, 109, 120, 0.6)';
+    // Outer card container
+    ctx.fillStyle = '#0E1625';
+    ctx.strokeStyle = node.status === 'Ready' ? 'rgba(74, 222, 128, 0.4)' : 'rgba(251, 113, 133, 0.5)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.roundRect(x - 56, y - 46, 112, 92, 10);
+    ctx.roundRect(x, y, cardW, cardH, 8);
     ctx.fill();
     ctx.stroke();
 
-    // Turret Barrel with Cross-Lane Aiming Angle
-    ctx.save();
-    ctx.translate(x + 24, y);
-    if (node.turretAngle) {
-      ctx.rotate(node.turretAngle);
-    }
+    // Node header: Name & Status pill
+    ctx.fillStyle = '#F8FAFC';
+    ctx.font = 'bold 12px JetBrains Mono, monospace';
+    ctx.fillText(node.name, x + 10, y + 18);
 
-    const timeSinceFire = node.lastFiredTimestamp ? (Date.now() - node.lastFiredTimestamp) / 1000 : 999;
-    const recoilOffset = timeSinceFire < 0.18 ? -10 * (1 - timeSinceFire / 0.18) : 0;
+    ctx.fillStyle = node.status === 'Ready' ? '#4ADE80' : '#FB7185';
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText(node.status, x + cardW - (node.status === 'Ready' ? 40 : 54), y + 18);
 
-    const barrelGrad = ctx.createLinearGradient(0, -7, 36, 7);
-    barrelGrad.addColorStop(0, '#151E33');
-    barrelGrad.addColorStop(1, isCharging ? '#32D5D2' : '#2A3752');
-    ctx.fillStyle = barrelGrad;
-    ctx.fillRect(recoilOffset, -6, 32, 12);
+    // CPU Allocatable Gauge
+    const freeCpu = Math.max(0, node.cpuAllocatable - node.cpuRequested);
+    const cpuUsedPct = Math.min(1, node.cpuRequested / Math.max(0.1, node.cpuAllocatable));
 
-    ctx.strokeStyle = isCharging ? '#32D5D2' : '#5A6E8C';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(recoilOffset + 22, -8, 6, 16);
+    ctx.fillStyle = '#8190A7';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillText(`CPU: ${formatCpu(freeCpu)} free / ${formatCpu(node.cpuAllocatable)}`, x + 10, y + 34);
 
-    if (isCharging || node.serviceCapacity > 0) {
-      ctx.shadowColor = '#32D5D2';
-      ctx.shadowBlur = isCharging ? 16 : 8;
-      ctx.fillStyle = '#32D5D2';
-      ctx.beginPath();
-      ctx.arc(recoilOffset + 32, 0, 4.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
+    ctx.fillStyle = '#151F31';
+    ctx.fillRect(x + 10, y + 38, cardW - 20, 5);
+    ctx.fillStyle = cpuUsedPct > 0.85 ? '#FB7185' : '#6EA8FE';
+    ctx.fillRect(x + 10, y + 38, (cardW - 20) * cpuUsedPct, 5);
 
-    // Central Node Core
-    ctx.fillStyle = '#151E33';
-    ctx.beginPath();
-    ctx.arc(x + 12, y, 16, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = isReady ? '#54D98C' : '#F06D78';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    // Memory Allocatable Gauge
+    const freeMem = Math.max(0, node.memoryAllocatable - node.memoryRequested);
+    const memUsedPct = Math.min(1, node.memoryRequested / Math.max(1, node.memoryAllocatable));
 
-    // Ready Status Indicator Dot
-    ctx.fillStyle = isReady ? '#54D98C' : '#F06D78';
-    ctx.beginPath();
-    ctx.arc(x + 12, y, 5, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillStyle = '#8190A7';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillText(`RAM: ${formatMemory(freeMem)} free / ${formatMemory(node.memoryAllocatable)}`, x + 10, y + 54);
 
-    // Node Name Tag
-    ctx.fillStyle = '#F7F9FF';
-    ctx.font = 'bold 11px "JetBrains Mono", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(node.name, x - 10, y - 28);
+    ctx.fillStyle = '#151F31';
+    ctx.fillRect(x + 10, y + 58, cardW - 20, 5);
+    ctx.fillStyle = memUsedPct > 0.85 ? '#FB7185' : '#5EEAD4';
+    ctx.fillRect(x + 10, y + 58, (cardW - 20) * memUsedPct, 5);
 
-    // Defense Health Bar
-    const barW = 82;
-    const barH = 4;
-    ctx.fillStyle = '#1D283E';
-    ctx.fillRect(x - 46, y - 22, barW, barH);
-    ctx.fillStyle = healthFrac > 0.5 ? '#54D98C' : healthFrac > 0.2 ? '#F2B95F' : '#F06D78';
-    ctx.fillRect(x - 46, y - 22, barW * healthFrac, barH);
-
-    // Resource Meters: CPU & MEM (Allocatable vs Requested)
-    const cpuFrac = Math.min(1, (node.cpuRequested || 0) / node.cpuAllocatable);
-    const memFrac = Math.min(1, (node.memoryRequested || 0) / node.memoryAllocatable);
-
-    ctx.fillStyle = '#7F8CA3';
-    ctx.font = '8px "JetBrains Mono", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`CPU ${(node.cpuRequested || 0).toFixed(1)}/${node.cpuAllocatable}c`, x - 46, y + 19);
-    ctx.fillStyle = '#151E33';
-    ctx.fillRect(x - 46, y + 22, 82, 3.5);
-    ctx.fillStyle = '#4F7CFF';
-    ctx.fillRect(x - 46, y + 22, 82 * cpuFrac, 3.5);
-
-    ctx.fillStyle = '#7F8CA3';
-    ctx.fillText(`RAM ${node.memoryRequested || 0}/${node.memoryAllocatable}M`, x - 46, y + 34);
-    ctx.fillStyle = '#151E33';
-    ctx.fillRect(x - 46, y + 37, 82, 3.5);
-    ctx.fillStyle = '#7765F8';
-    ctx.fillRect(x - 46, y + 37, 82 * memFrac, 3.5);
-
-    // Continuous Active Service Defenses (Running Pods on node)
-    for (let a = 0; a < 3; a++) {
-      const isOnline = a < node.serviceCapacity;
-      ctx.fillStyle = isOnline ? '#32D5D2' : 'rgba(127, 140, 163, 0.3)';
-      ctx.shadowColor = isOnline ? '#32D5D2' : 'transparent';
-      ctx.shadowBlur = isOnline ? 6 : 0;
-      ctx.beginPath();
-      ctx.arc(x - 32 + a * 11, y - 5, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.restore();
+    // Pod chips on this node
+    ctx.fillStyle = '#B8C4D6';
+    ctx.font = '9px JetBrains Mono, monospace';
+    const podText = node.pods.length === 0 ? 'Pods: <none>' : `Pods (${node.pods.length}): ${node.pods.join(', ')}`;
+    const truncated = podText.length > 24 ? podText.substring(0, 22) + '…' : podText;
+    ctx.fillText(truncated, x + 10, y + 78);
   }
 
-  private drawCustomer(ctx: CanvasRenderingContext2D, cust: CustomerEntity) {
-    const { pixelX, pixelY, request, remainingSlaSeconds, totalSlaSeconds, walkCycle } = cust;
-    const isUrgent = request.characterType === 'urgent' || request.characterType === 'escalation';
+  private renderMissionSignal(
+    ctx: CanvasRenderingContext2D,
+    signal: any,
+    reducedMotion: boolean
+  ) {
+    const x = signal.pixelX;
+    const y = signal.pixelY;
+    const size = 50;
 
-    ctx.save();
-
-    const legOffset = Math.sin(walkCycle) * 5;
-
-    // Shadow on ground
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    // Glowing technical beacon
+    ctx.fillStyle = '#0E1625';
+    ctx.strokeStyle = signal.status === 'satisfying' ? '#4ADE80' : '#6EA8FE';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.ellipse(pixelX, pixelY + 26, 16, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Legs
-    ctx.strokeStyle = '#7F8CA3';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(pixelX - 5, pixelY + 12);
-    ctx.lineTo(pixelX - 5 + legOffset, pixelY + 24);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(pixelX + 5, pixelY + 12);
-    ctx.lineTo(pixelX + 5 - legOffset, pixelY + 24);
-    ctx.stroke();
-
-    // Body
-    const bodyColor = isUrgent ? '#38161B' : '#11182A';
-    const borderColor = isUrgent ? '#F06D78' : '#4F7CFF';
-    ctx.fillStyle = bodyColor;
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.roundRect(pixelX - 15, pixelY - 13, 30, 26, 6);
+    ctx.roundRect(x - size / 2, y - size / 2, size, size, 10);
     ctx.fill();
     ctx.stroke();
 
-    // Visor
-    ctx.fillStyle = isUrgent ? '#F06D78' : '#32D5D2';
-    ctx.fillRect(pixelX - 9, pixelY - 7, 18, 4.5);
-
-    // Request Briefcase
-    ctx.fillStyle = '#080B17';
-    ctx.strokeStyle = '#7F8CA3';
-    ctx.lineWidth = 1;
-    ctx.fillRect(pixelX - 20, pixelY, 12, 10);
-    ctx.strokeRect(pixelX - 20, pixelY, 12, 10);
-
-    // Overhead Compact Ticket Card & SLA Meter
-    const isSatisfying = cust.status === 'satisfying';
-    const cardW = 108;
-    const cardH = 26;
-    const cardX = pixelX - cardW / 2;
-    const cardY = pixelY - 44;
-
-    ctx.fillStyle = isSatisfying ? 'rgba(6, 78, 92, 0.95)' : 'rgba(13, 18, 32, 0.95)';
-    ctx.strokeStyle = isSatisfying ? '#00F0FF' : isUrgent ? '#F06D78' : 'rgba(79, 124, 255, 0.45)';
-    ctx.lineWidth = isSatisfying ? 1.5 : 1;
-    if (isSatisfying) {
-      ctx.shadowColor = '#00F0FF';
-      ctx.shadowBlur = 8;
+    // Pulse ring
+    if (!reducedMotion) {
+      const pulseSize = (Math.sin(signal.pulsePhase) + 1) * 4;
+      ctx.strokeStyle = 'rgba(110, 168, 254, 0.3)';
+      ctx.beginPath();
+      ctx.roundRect(x - size / 2 - pulseSize, y - size / 2 - pulseSize, size + pulseSize * 2, size + pulseSize * 2, 12);
+      ctx.stroke();
     }
-    ctx.beginPath();
-    ctx.roundRect(cardX, cardY, cardW, cardH, 4);
-    ctx.fill();
-    ctx.stroke();
-    ctx.shadowBlur = 0;
 
-    ctx.fillStyle = isSatisfying ? '#00F0FF' : '#F7F9FF';
-    ctx.font = 'bold 8.5px "JetBrains Mono", sans-serif';
+    ctx.fillStyle = '#6EA8FE';
+    ctx.font = 'bold 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('SIGNAL', x, y - 6);
+
+    ctx.fillStyle = '#F8FAFC';
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText(`L${signal.mission.lessonNumber}`, x, y + 10);
     ctx.textAlign = 'left';
 
-    const reqLabel = isSatisfying 
-      ? `🎯 SERVING...` 
-      : `REQ: ${request.title.length > 13 ? request.title.substring(0, 12) + '…' : request.title}`;
-    ctx.fillText(reqLabel, cardX + 5, cardY + 11);
-
-    const slaFrac = Math.max(0, remainingSlaSeconds / totalSlaSeconds);
-    ctx.fillStyle = '#151E33';
-    ctx.fillRect(cardX + 5, cardY + 16, cardW - 10, 3.5);
-
-    const slaColor = isSatisfying ? '#00F0FF' : slaFrac > 0.5 ? '#54D98C' : slaFrac > 0.25 ? '#F2B95F' : '#F06D78';
-    ctx.fillStyle = slaColor;
-    ctx.fillRect(cardX + 5, cardY + 16, (cardW - 10) * (isSatisfying ? 1 : slaFrac), 3.5);
-
-    ctx.restore();
-  }
-
-  private drawWorkloadCapsule(ctx: CanvasRenderingContext2D, cap: { currentX: number; currentY: number; color: string; podName: string; image: string }) {
-    ctx.save();
-    ctx.shadowColor = cap.color;
-    ctx.shadowBlur = 12;
-
-    ctx.fillStyle = cap.color;
-    ctx.beginPath();
-    ctx.arc(cap.currentX, cap.currentY, 11, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.arc(cap.currentX, cap.currentY, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = '#F7F9FF';
-    ctx.font = 'bold 9px "JetBrains Mono", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(cap.podName, cap.currentX, cap.currentY - 14);
-
-    ctx.restore();
-  }
-
-  private drawProjectile(ctx: CanvasRenderingContext2D, proj: ProjectileEntity) {
-    ctx.save();
-
-    // Calculate flight angle for cross-lane diagonal firing
-    const angle = Math.atan2(proj.targetY - proj.startY, proj.targetX - proj.startX);
-
-    proj.trail.forEach((t) => {
-      ctx.globalAlpha = t.alpha * 0.6;
-      ctx.fillStyle = proj.color;
-      ctx.shadowColor = proj.color;
-      ctx.shadowBlur = 8;
-      ctx.beginPath();
-      ctx.arc(t.x, t.y, proj.radius * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    ctx.translate(proj.currentX, proj.currentY);
-    ctx.rotate(angle);
-
-    ctx.globalAlpha = 1.0;
-    ctx.fillStyle = '#FFFFFF';
-    ctx.shadowColor = proj.color;
-    ctx.shadowBlur = 16;
-    ctx.beginPath();
-    ctx.arc(0, 0, proj.radius, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = proj.color;
-    ctx.fillRect(-22, -2.5, 22, 5);
-
-    ctx.restore();
-  }
-
-  private drawSchedulerPulse(ctx: CanvasRenderingContext2D, pulse: { startX: number; startY: number; targetX: number; targetY: number; progress: number; color: string }) {
-    ctx.save();
-    const t = pulse.progress;
-    const curX = pulse.startX + (pulse.targetX - pulse.startX) * t;
-    const curY = pulse.startY + (pulse.targetY - pulse.startY) * t;
-
-    ctx.strokeStyle = pulse.color;
-    ctx.shadowColor = pulse.color;
-    ctx.shadowBlur = 8;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(pulse.startX, pulse.startY);
-    ctx.lineTo(curX, curY);
-    ctx.stroke();
-
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.arc(curX, curY, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
+    // Show Time to Impact only in Challenge Mode
+    if (signal.isChallengeMode && signal.remainingTimeToImpact < 9999) {
+      const t = Math.ceil(signal.remainingTimeToImpact);
+      ctx.fillStyle = t < 15 ? '#FB7185' : '#FBBF24';
+      ctx.font = 'bold 10px JetBrains Mono, monospace';
+      ctx.fillText(`${t}s`, x - 10, y + size / 2 + 14);
+    }
   }
 }
